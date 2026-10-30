@@ -4,6 +4,8 @@ DeepSeek Harness（DSH）桌面版的推理档位自动调度插件：在输入�
 「自动」按钮——点亮后，每条请求的 `reasoning_effort` 由插件按消息复杂度自动选择；
 熄灭后回到原生手动选档，模型弹窗的推理等级列表保持原样（不注入任何伪档位）。
 
+![screenshot](docs/screenshot.jpg)
+
 本项目是 `dsh-adaptive-effort` 的 fork。上游在推理等级下拉框里注入
 一个「自动」档位，模型切走或快照残留时会把它原样发给服务端，触发
 `UNSUPPORTED_REASONING_EFFORT` 报错；本 fork 把「自动」从档位列表挪到独立按钮，

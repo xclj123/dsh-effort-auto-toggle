@@ -6,6 +6,8 @@ picks `reasoning_effort` for every request based on message complexity; dim —
 native manual picking, and the effort dropdown in the model picker stays
 untouched (no fake entries injected).
 
+![screenshot](docs/screenshot.jpg)
+
 Forked from `dsh-adaptive-effort`, which injected an "auto" entry into the
 effort dropdown; switching models or a stale snapshot could forward it to the
 provider and trigger `UNSUPPORTED_REASONING_EFFORT`. This fork moves "auto"
