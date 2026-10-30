@@ -1,5 +1,11 @@
 # 变更记录
 
+## 0.2.2 — 2026-10-30
+
+### Fixed
+
+- Badge click now jumps to the head of the badge's own turn. The badge is rendered by the host TurnTailNodeView (`data-turn-tail`), an independent row placed AFTER the assistant content, so the previous nearest-anchor lookup aligned that tail and visually landed on the next message. We now resolve the turn number and align its first `[data-chat-turn]` row exactly like the host `ChatScroller.scrollToTurn`, with the outermost-anchor lookup kept as a fallback.
+
 ## 0.2.1 — 2026-10-30
 
 ### 修复：消息角标点击回到回复开头不生效

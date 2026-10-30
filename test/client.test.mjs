@@ -122,39 +122,58 @@ test('bundle loads and exports apply/inject', () => {
   assert.deepEqual([...bundle.exports.inject], ['slots', 'locale', 'configForms']);
 });
 
-test('message badge jump mirrors the host scroller posture', () => {
+test('message badge jump aligns to the turn HEAD row, not the tail', () => {
   const { ctx, registrations } = makeCtx();
   loadBundle().exports.apply(ctx);
   const { component } = registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.chat.assistant-actions');
 
-  const rows = [];
-  const row = {
-    closest: (sel) => (sel.includes('data-chat-anchor-key') ? row : scroller),
-    getBoundingClientRect: () => ({ top: 700 }),
-    scrollIntoViewCalls: [],
-  };
+  const turnHeadRow = { getBoundingClientRect: () => ({ top: 220 }) };
+  const flow = { querySelector: (sel) => (sel === '[data-chat-turn="7"]' ? turnHeadRow : null) };
   const scroller = {
-    closest: () => null,
+    closest: () => scroller,
+    querySelector: (sel) => (sel === '[data-slot="conversation.chat.flow"]' ? flow : null),
     scrollTop: 5000,
     getBoundingClientRect: () => ({ top: 100 }),
   };
-  row.closest = (sel) => (sel.includes('data-chat-anchor-key') ? row : scroller);
-  rows.push(row, scroller);
+  const tail = {
+    closest: (sel) => (sel === '[data-turn-tail]' ? tail : scroller),
+    getAttribute: (name) => (name === 'data-turn-tail' ? '7' : null),
+    getBoundingClientRect: () => ({ top: 700 }),
+  };
 
   const meta = { useTrajectory: () => ({ model: 'glm-5.3', effort: 'low', outputTokens: 12 }) };
   const badge = component({ t, messageId: 'm1', useSession: undefined, useTrajectory: meta.useTrajectory });
-  assert.equal(badge.type, 'button');
-  assert.equal(badge.props.onClick.name, 'jumpToMessage');
-  badge.props.onClick({ currentTarget: { closest: () => row } });
-  // delta = 700 - 100 = 600; target = 5000 + 600 - 24 = 5576
-  assert.equal(scroller.scrollTop, 5576, 'aligns the row 24px below the scroller top, host style');
+  badge.props.onClick({ currentTarget: tail });
+  // delta = 220 - 100 = 120; target = 5000 + 120 - 24 = 5096 (turn HEAD, not tail 700)
+  assert.equal(scroller.scrollTop, 5096, 'aligns the turn head row 24px below the scroller top');
+});
 
-  // no conversation scroller above the row: falls back to scrollIntoView
-  const orphan = { closest: () => null, getBoundingClientRect: () => ({ top: 0 }), scrolled: [] };
-  orphan.scrollIntoView = (opts) => orphan.scrolled.push(opts);
-  scroller.scrollTop = -1; // poison: must not be touched in this branch
-  badge.props.onClick({ currentTarget: { closest: () => orphan } });
-  assert.equal(JSON.stringify(orphan.scrolled), JSON.stringify([{ behavior: 'smooth', block: 'start' }]));
+test('message badge jump falls back to the outermost anchor row without turn-tail', () => {
+  const { ctx, registrations } = makeCtx();
+  loadBundle().exports.apply(ctx);
+  const { component } = registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.chat.assistant-actions');
+
+  const innerRow = { hasAttribute: (n) => n === 'data-chat-anchor-key', getBoundingClientRect: () => ({ top: 310 }) };
+  const outerRow = { hasAttribute: (n) => n === 'data-chat-anchor-key', getBoundingClientRect: () => ({ top: 300 }) };
+  const scroller = {
+    closest: () => scroller,
+    querySelector: () => null,
+    scrollTop: 2000,
+    getBoundingClientRect: () => ({ top: 0 }),
+  };
+  const badgeDom = {
+    closest: (sel) => (sel === '[data-conversation-scroll]' ? scroller : null),
+    hasAttribute: () => false,
+    parentElement: innerRow,
+  };
+  innerRow.parentElement = outerRow;
+  outerRow.parentElement = scroller;
+
+  const meta = { useTrajectory: () => ({ model: 'glm-5.3', effort: 'low', outputTokens: 12 }) };
+  const badge = component({ t, messageId: 'm1', useSession: undefined, useTrajectory: meta.useTrajectory });
+  badge.props.onClick({ currentTarget: badgeDom });
+  // outermost anchor row top=300 -> 2000 + 300 - 24 = 2276
+  assert.equal(scroller.scrollTop, 2276, 'falls back to the OUTERMOST anchor row');
 });
 
 test('apply registers the composer button, the settings card and the message badge', () => {
