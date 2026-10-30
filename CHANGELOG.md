@@ -1,5 +1,15 @@
 # 变更记录
 
+## 0.2.1 — 2026-10-30
+
+### 修复：消息角标点击回到回复开头不生效
+- 行定位改用宿主 ChatScroller 的行标识 `data-chat-anchor-key`（原来的
+  `data-chat-flow-kind` 只是类型标记，closest 可能落到嵌套的步骤子行上）。
+- 滚动姿势改照宿主 `ChatScroller.align`：对该行与 `[data-conversation-scroll]`
+  滚动容器求 delta 后直接写 `scrollTop`（顶部留 24px，同宿主 `scrollToTurn`）。
+  原来的裸 `scrollIntoView` 在嵌套滚动容器 + 虚拟列表 scroller 的自管状态下会被
+  吞掉或滚错容器；无 scroller 时仍回退 `scrollIntoView`。
+
 ## 0.2.0 — 2026-10-30
 
 ### 模型自适应档位（breaking 行为改进）

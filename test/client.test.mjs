@@ -122,6 +122,41 @@ test('bundle loads and exports apply/inject', () => {
   assert.deepEqual([...bundle.exports.inject], ['slots', 'locale', 'configForms']);
 });
 
+test('message badge jump mirrors the host scroller posture', () => {
+  const { ctx, registrations } = makeCtx();
+  loadBundle().exports.apply(ctx);
+  const { component } = registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.chat.assistant-actions');
+
+  const rows = [];
+  const row = {
+    closest: (sel) => (sel.includes('data-chat-anchor-key') ? row : scroller),
+    getBoundingClientRect: () => ({ top: 700 }),
+    scrollIntoViewCalls: [],
+  };
+  const scroller = {
+    closest: () => null,
+    scrollTop: 5000,
+    getBoundingClientRect: () => ({ top: 100 }),
+  };
+  row.closest = (sel) => (sel.includes('data-chat-anchor-key') ? row : scroller);
+  rows.push(row, scroller);
+
+  const meta = { useTrajectory: () => ({ model: 'glm-5.3', effort: 'low', outputTokens: 12 }) };
+  const badge = component({ t, messageId: 'm1', useSession: undefined, useTrajectory: meta.useTrajectory });
+  assert.equal(badge.type, 'button');
+  assert.equal(badge.props.onClick.name, 'jumpToMessage');
+  badge.props.onClick({ currentTarget: { closest: () => row } });
+  // delta = 700 - 100 = 600; target = 5000 + 600 - 24 = 5576
+  assert.equal(scroller.scrollTop, 5576, 'aligns the row 24px below the scroller top, host style');
+
+  // no conversation scroller above the row: falls back to scrollIntoView
+  const orphan = { closest: () => null, getBoundingClientRect: () => ({ top: 0 }), scrolled: [] };
+  orphan.scrollIntoView = (opts) => orphan.scrolled.push(opts);
+  scroller.scrollTop = -1; // poison: must not be touched in this branch
+  badge.props.onClick({ currentTarget: { closest: () => orphan } });
+  assert.equal(JSON.stringify(orphan.scrolled), JSON.stringify([{ behavior: 'smooth', block: 'start' }]));
+});
+
 test('apply registers the composer button, the settings card and the message badge', () => {
   const { ctx, registrations } = makeCtx();
   loadBundle().exports.apply(ctx);
