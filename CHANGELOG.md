@@ -1,5 +1,30 @@
 # 变更记录
 
+## 0.2.3 — 2026-11-05
+
+### Added / Fixed — DSH 0.2.2 host compatibility (dual-mode)
+
+DSH 0.2.2-rc.1 changed how the reasoning effort reaches the provider: the
+`agent/request` waterfall result is now validated against the step's fixed
+model selection, so rewriting `reasoningEffort` there (the 0.2.2 approach)
+fails every step with an effort mismatch. Effort changes must go through the
+new `agent.model.select()` API before step preparation.
+
+This release makes the plugin **dual-mode**: it probes each event's agent
+instance and switches automatically — no separate builds, no config.
+
+- **New hosts (DSH 0.2.2+)**: the decision fires at `agent/inbox/claimed`
+  time (synchronous, so the first step of a turn already runs at the
+  scheduled tier) via `agent.model.select()`; `agent/request` becomes
+  read-only bookkeeping that also queues refinements (tool-continuity
+  bumps, delayed minimax verdicts) for the next step. Disarm-restore and
+  the forced-thinking `off` clamp ride the same API.
+- **Old hosts (DSH ≤ 0.2.1)**: the previous path is untouched — same
+  behaviour, same ledger.
+- Ledger reasons now distinguish the model.select path (`scheduled
+  (model.select path)`, `select X queued for next step`), and first-step
+  attribution reuses the claim-time decision (classifier source included).
+
 ## 0.2.2 — 2026-10-30
 
 ### Fixed

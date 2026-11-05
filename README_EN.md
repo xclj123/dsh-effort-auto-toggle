@@ -143,7 +143,13 @@ button tier labels (incl. degradation without a sessions service).
 
 Host anchor points (verified against the 2026-10 desktop asar):
 
-- `agent/request` waterfall (registered with prepend)
+**DSH 0.2.3+ supports both DSH 0.2.1 and DSH 0.2.2+ (incl. 0.2.2-rc.1)**: the plugin
+probes the host at runtime — legacy hosts keep the `agent/request` rewrite path,
+modern hosts (where effort rides `agent.model.select()` and `agent/request` is
+validated read-only) switch to the claim-time decision path automatically.
+
+- `agent/inbox/claimed` broadcast (the claim-time decision window on 0.2.2+ hosts) and the `agent.model.select()` API
+- `agent/request` waterfall (registered with prepend; read-only on 0.2.2+ hosts)
 - `session/event` (usage backfill into the ledger)
 - `llm` service `resolveModelInfo(provider, model)` — the 0.2.0 ladder source
 - `settings` service modern `describe` / `update` (ns = profile entry id)

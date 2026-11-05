@@ -16,10 +16,14 @@ import { apply, DEFAULT_CONFIG } from '../lib/index.js';
 const AUTO = 'auto';
 const WIRE = ['off', 'low', 'high', 'max'];
 
-function harness(overrides = {}, efforts = [{ id: 'low' }, { id: 'high' }, { id: 'max' }]) {
+function harness(overrides = {}, efforts = [{ id: 'low' }, { id: 'high' }, { id: 'max' }], opts = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'effort-toggle-'));
   const store = { ...DEFAULT_CONFIG, mode: 'heuristic', ledgerDir: dir, ...overrides };
   const handlers = new Map();
+  // 0.2.3: simulate a host 0.2.2+ agent carrying the model selection API.
+  const modern = opts.modern === true;
+  const selectCalls = [];
+  const selection = { provider: 'bigmodel', model: 'glm-5.3-3-step', reasoningEffort: 'max' };
   const logs = { info: [], warn: [] };
   const listeners = new Set();
   const scope = {
@@ -52,13 +56,22 @@ function harness(overrides = {}, efforts = [{ id: 'low' }, { id: 'high' }, { id:
     get: () => undefined,
   };
   apply(ctx, store);
+  const modelApi = modern
+    ? {
+        current: () => ({ ...selection }),
+        select: (s) => { selectCalls.push({ ...s }); Object.assign(selection, s); },
+      }
+    : null;
+  const agentOf = (events = []) => ({ session: { id: 'sess-1', events }, ...(modelApi ? { model: modelApi } : {}) });
   const request = (seed, events = [], turn = 1, step = 1) =>
     handlers.get('agent/request').cb(
-      { turn, step, agent: { session: { id: 'sess-1', events } } },
+      { turn, step, agent: agentOf(events) },
       async () => ({ provider: 'bigmodel', model: 'glm-5.3-' + efforts.length + '-step', ...seed }),
     );
+  const claim = (text, turn = 1) =>
+    handlers.get('agent/inbox/claimed').cb({ message: { role: 'user', content: [{ type: 'text', text }] }, turn, agent: agentOf() });
   const broadcast = (session, event) => handlers.get('session/event').cb(session, event);
-  return { dir, logs, request, store, broadcast, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, logs, request, claim, store, broadcast, selection, selectCalls, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 const userMsg = (text) => ({ type: 'user/message', data: { role: 'user', content: [{ type: 'text', text }] } });
@@ -199,5 +212,84 @@ test('armed on a 5-level model: the scheduler emits real levels (ultra/heighx), 
     // idle chatter -> low stays the lightest real level
     const out2 = await h.request({ reasoningEffort: AUTO }, [userMsg('hi')]);
     assert.equal(out2.reasoningEffort, 'low');
+  } finally { h.cleanup(); }
+});
+
+// ---- 0.2.3 host 0.2.2+ path: agent.model.select instead of request rewrite ----
+// The host validates the waterfall result against the step's fixed selection
+// (provider/model/reasoningEffort must be untouched); this mirrors that check.
+function loopValidate(out, selection) {
+  if (out.provider !== selection.provider || out.model !== selection.model)
+    throw new Error('proposed model differs from the step selection');
+  if (out.reasoningEffort !== selection.reasoningEffort)
+    throw new Error('proposed effort differs from the step selection: use agent.model.select() before step preparation');
+}
+
+test('modern claimed: a simple message selects low at claim time; the request stays read-only', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.store.autoOn = true;
+    h.claim('hi');
+    assert.ok(h.selectCalls.some((s) => s.reasoningEffort === 'low'), 'claim must select low via agent.model.select');
+    const sel = { ...h.selection };
+    const out = await h.request({ reasoningEffort: sel.reasoningEffort });
+    loopValidate(out, sel);
+  } finally { h.cleanup(); }
+});
+
+test('modern request: an unclaimed turn queues the desired effort for the next step and never rewrites this one', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.store.autoOn = true;
+    const sel = { ...h.selection }; // adapter default max
+    const out = await h.request({ reasoningEffort: 'max' }, [userMsg('hi')]); // desired low, wire max
+    loopValidate(out, sel);
+    assert.ok(h.selectCalls.some((s) => s.reasoningEffort === 'low'), 'the desired effort must be queued via select()');
+  } finally { h.cleanup(); }
+});
+
+test('modern continuity: recent tool activity in the session pins the claim-time low up to high', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.store.autoOn = true;
+    h.broadcast({ id: 'sess-1' }, { type: 'tool/call', data: { name: 'bash', arguments: 'x'.repeat(900) } });
+    h.claim('你好');
+    assert.ok(h.selectCalls.some((s) => s.reasoningEffort === 'high'), 'continuity must bump the claim-time selection');
+  } finally { h.cleanup(); }
+});
+
+test('modern disarm: the first passthrough after going dark restores the pre-auto manual pick via select()', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.store.autoOn = true;
+    await h.request({ reasoningEffort: 'max' }, [userMsg('hi')]); // arms; pre-auto wire was max; queues low
+    const armedCalls = h.selectCalls.length;
+    h.store.autoOn = false;
+    const sel = { ...h.selection }; // low (our queued select)
+    const out = await h.request({ reasoningEffort: 'low' }); // passthrough
+    loopValidate(out, sel);
+    assert.ok(h.selectCalls.slice(armedCalls).some((s) => s.reasoningEffort === 'max'), 'disarm must restore the pre-auto manual effort');
+  } finally { h.cleanup(); }
+});
+
+test('modern disarmed claim: manual off on a forced-thinking model is clamped to low once the ladder is cached', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.store.autoOn = true;
+    await h.request({ reasoningEffort: 'max' }, [userMsg('hi')]); // fills ladderCache via the llm service
+    h.store.autoOn = false;
+    h.selection.reasoningEffort = 'off';
+    h.claim('hi');
+    assert.ok(h.selectCalls.some((s) => s.reasoningEffort === 'low'), 'off must be clamped to the ladder floor on forced-thinking models');
+  } finally { h.cleanup(); }
+});
+
+test('modern host with auto dark: a passthrough request is returned untouched (no select churn)', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    const sel = { ...h.selection };
+    const out = await h.request({ reasoningEffort: 'max' });
+    loopValidate(out, sel);
+    assert.equal(h.selectCalls.length, 0, 'nothing should be selected while auto was never armed');
   } finally { h.cleanup(); }
 });

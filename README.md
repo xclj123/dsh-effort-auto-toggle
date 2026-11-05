@@ -130,8 +130,13 @@ npm test          # 21 个用例，零依赖（node --test），无需 npm insta
 
 宿主依赖点（均在 2026-10 桌面版 asar 源码中核实）：
 
-- `agent/request` waterfall（prepend 注册）
+**DSH 0.2.3+ 兼容 DSH 0.2.1 与 0.2.2+（含 0.2.2-rc.1）**：插件运行时自动探测宿主能力
+—旧宿主继续走 `agent/request` 改写路径，新宿主（effort 改走 `agent.model.select()`，
+`agent/request` 只读校验）自动切换到 claim-time 决策路径，无需分别安装。
+
+- `agent/request` waterfall（prepend 注册；0.2.2+ 宿主上为只读）
 - `session/event`（usage 回填账本）
+- `agent/inbox/claimed` 广播（0.2.2+ 宿主的 claim-time 决策窗口）与 `agent.model.select()` API
 - `llm` 服务 `resolveModelInfo(provider, model)`（0.2.0 档位表来源）
 - `settings` 服务现代 `describe` / `update`（ns = profile entry id）
 - client 侧 `conversation.input.right` 插槽、`modelSelection` 会话投影、
