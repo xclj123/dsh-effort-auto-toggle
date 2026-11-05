@@ -65,6 +65,8 @@ node tools/install.mjs --profile "<…>/profiles/desktop" --force <其余参数�
 
 ## 配置
 
+> 首次点亮「自动」且尚未配置打分 key 时，输入框上方会弹出引导卡：可直接粘贴 key 保存（写入插件配置）、一键切换启发式，或关闭不再提示。
+
 安装时写进 profile 的 `cordis.patch.yml`，之后**设置卡上直接改**（无需重启）：
 
 | 字段 | 默认 | 说明 |

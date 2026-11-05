@@ -76,6 +76,8 @@ Cross-platform: profiles are auto-discovered under `~/.dsh/profiles/` via
 
 ## Configuration
 
+> On first arming with no scorer key configured, a popover above the composer toggle lets the user paste a key (saved straight into plugin settings), switch to the keyless heuristic mode, or dismiss.
+
 Written into the profile's `cordis.patch.yml` at install time; afterwards
 editable on the settings card (no restart needed):
 
