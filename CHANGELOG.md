@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.2.5 — 2026-11-05
+- Removed the dead `settings.plugin.item` slot injection and the
+  `AutoToggleCard` component: that slot does not exist in any DSH host
+  build (the real settings card is rendered by the host plugin-manager
+  page from `configForms`), so the registration was silently dead
+  code. Also dropped the now-orphaned helpers (ToggleRow, MODE_OPTIONS,
+  card styles, scopeClear) and the `card.*` locale keys, plus the
+  matching test assertions.
+
 ## 0.2.4 — 2026-11-05
 - First-run key tip: while armed with `mode: minimax` and no key, the
   toggle shows a popover — paste a key (saved straight into plugin

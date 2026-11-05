@@ -176,14 +176,13 @@ test('message badge jump falls back to the outermost anchor row without turn-tai
   assert.equal(scroller.scrollTop, 2276, 'falls back to the OUTERMOST anchor row');
 });
 
-test('apply registers the composer button, the settings card and the message badge', () => {
+test('apply registers the composer button and the message badge', () => {
   const { ctx, registrations } = makeCtx();
   loadBundle().exports.apply(ctx);
   const slots = registrations.filter((r) => r.kind === 'slot').map((r) => r.spec.name);
   assert.deepEqual(slots.sort(), [
     'conversation.chat.assistant-actions',
     'conversation.input.right',
-    'settings.plugin.item',
   ]);
   const button = registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.input.right');
   assert.equal(button.spec.id, 'effort-auto-toggle-button');
@@ -224,18 +223,6 @@ test('the button refuses to act when the settings namespace is unavailable', () 
   assert.ok(node, 'inner button found inside the wrapper div');
   assert.equal(node.props.disabled, true);
   node.props.onClick(); // must be a no-op, not a throw
-});
-
-test('the settings card renders an autoOn switch wired to the same namespace', () => {
-  const { ctx, registrations } = makeCtx();
-  loadBundle().exports.apply(ctx);
-  const { component } = registrations.find((r) => r.kind === 'slot' && r.spec.name === 'settings.plugin.item');
-  const scope = fakeScope({ autoOn: false, mode: 'heuristic', enabled: true, allowToolUpgrade: true });
-  const tree = flatten(component({ t, scope }));
-  const checkbox = tree.find((n) => n.type === 'input' && n.props.type === 'checkbox' && n.props.id === 'plugin-config-effort-auto-toggle-autoon');
-  assert.ok(checkbox, 'autoOn checkbox should exist');
-  checkbox.props.onChange({ currentTarget: { checked: true } });
-  assert.deepEqual(scope.calls, [['autoOn', true]]);
 });
 
 test('0.1.6 live tier: the lit button shows the last actually-used effort from modelSelection', () => {
