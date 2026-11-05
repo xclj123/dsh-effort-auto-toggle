@@ -197,14 +197,14 @@ test('the button is a real toggle: dim when off, lit when on, click flips the se
   const { component } = registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.input.right');
 
   const off = fakeScope({ autoOn: false });
-  const dim = component({ t, scope: off });
-  assert.equal(dim.type, 'button');
+  const dim = flatten(component({ t, scope: off })).find((n) => n.type === 'button' && n.props['aria-label'] === 'effort-auto-toggle-button');
+  assert.ok(dim, 'inner button found inside the wrapper div');
   assert.equal(dim.props['aria-pressed'], 'false');
   assert.equal(dim.props.disabled, false);
   assert.match(dim.props.style.border, /1px solid/);
 
   const on = fakeScope({ autoOn: true });
-  const lit = component({ t, scope: on });
+  const lit = flatten(component({ t, scope: on })).find((n) => n.type === 'button' && n.props['aria-label'] === 'effort-auto-toggle-button');
   assert.equal(lit.props['aria-pressed'], 'true');
   assert.match(lit.props.style.background, /linear-gradient/);
 
@@ -220,7 +220,8 @@ test('the button refuses to act when the settings namespace is unavailable', () 
   loadBundle().exports.apply(ctx);
   const { component } = registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.input.right');
   const scope = { subscribe: () => () => {}, getSnapshot: () => ({ status: 'unavailable' }), set: () => { throw new Error('must not be called'); } };
-  const node = component({ t, scope });
+  const node = flatten(component({ t, scope })).find((n) => n.type === 'button' && n.props['aria-label'] === 'effort-auto-toggle-button');
+  assert.ok(node, 'inner button found inside the wrapper div');
   assert.equal(node.props.disabled, true);
   node.props.onClick(); // must be a no-op, not a throw
 });
@@ -283,4 +284,52 @@ test('0.1.7 nested inject captures the sessions service even when it is not a ct
   const span = tree.find((n) => n.type === 'span' && typeof n.props.children === 'string' && n.props.children.includes('·'));
   assert.ok(span, 'sessionsRef path should still reach the projection face');
   assert.equal(span.props.children, 'btn.auto·high');
+});
+
+// 0.2.4: first-run key tip popover on the composer toggle.
+test('key tip popover appears when armed, scored mode, and keyless', () => {
+  const { ctx, registrations } = makeCtx();
+  loadBundle().exports.apply(ctx);
+  const { component } = registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.input.right');
+  const scope = fakeScope({ autoOn: true, mode: 'minimax', minimaxApiKey: '' });
+  const nodes = flatten(component({ t, scope }));
+  assert.ok(nodes.some((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip'), 'popover renders above the toggle');
+  assert.ok(nodes.some((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip-key'), 'key input renders');
+  assert.ok(nodes.some((n) => n.type === 'strong' && n.props.children === 'keytip.title'), 'title renders');
+});
+
+test('key tip saves the pasted key through the settings form', () => {
+  const { ctx, registrations } = makeCtx();
+  loadBundle().exports.apply(ctx);
+  const { component } = registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.input.right');
+  const scope = fakeScope({ autoOn: true, mode: 'minimax', minimaxApiKey: '' });
+  const nodes = flatten(component({ t, scope }));
+  const keyInput = nodes.find((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip-key');
+  keyInput.props.onChange({ target: { value: 'sk-test-123' } });
+  const save = nodes.find((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip-save');
+  save.props.onClick();
+  assert.deepEqual(scope.calls.filter(([k]) => k === 'minimaxApiKey'), [['minimaxApiKey', 'sk-test-123']]);
+});
+
+test('key tip keep-heuristic switches the classifier mode', () => {
+  const { ctx, registrations } = makeCtx();
+  loadBundle().exports.apply(ctx);
+  const { component } = registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.input.right');
+  const scope = fakeScope({ autoOn: true, mode: 'minimax', minimaxApiKey: '' });
+  const nodes = flatten(component({ t, scope }));
+  const keep = nodes.find((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip-heuristic');
+  keep.props.onClick();
+  assert.deepEqual(scope.calls.filter(([k]) => k === 'mode'), [['mode', 'heuristic']]);
+});
+
+test('key tip stays hidden when a key is configured or mode is heuristic', () => {
+  const { ctx, registrations } = makeCtx();
+  loadBundle().exports.apply(ctx);
+  const { component } = registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.input.right');
+  const withKey = fakeScope({ autoOn: true, mode: 'minimax', minimaxApiKey: 'sk-live' });
+  assert.ok(!flatten(component({ t, scope: withKey })).some((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip'), 'no popover with a key');
+  const heuristic = fakeScope({ autoOn: true, mode: 'heuristic', minimaxApiKey: '' });
+  assert.ok(!flatten(component({ t, scope: heuristic })).some((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip'), 'no popover in heuristic mode');
+  const disarmed = fakeScope({ autoOn: false, mode: 'minimax', minimaxApiKey: '' });
+  assert.ok(!flatten(component({ t, scope: disarmed })).some((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip'), 'no popover while disarmed');
 });

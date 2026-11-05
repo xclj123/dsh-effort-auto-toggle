@@ -1,5 +1,13 @@
 # 变更记录
 
+## 0.2.4 — 2026-11-05
+- First-run key tip: while armed with `mode: minimax` and no key, the
+  toggle shows a popover — paste a key (saved straight into plugin
+  settings), keep the keyless heuristic mode, or dismiss (remembered in
+  localStorage).
+- Settings-card field descriptions now spell out the keyless heuristic
+  fallback.
+
 ## 0.2.3 — 2026-11-05
 
 ### Added / Fixed — DSH 0.2.2 host compatibility (dual-mode)
