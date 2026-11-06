@@ -1,5 +1,19 @@
 # 变更记录
 
+## 0.2.8 — 2026-11-06
+
+- Root-caused the "toggle cannot be disarmed" reports on DSH 0.2.2-rc.1: the
+  breakage comes from dsh-ops < 0.5.0, which poisons the host settings
+  write path for every plugin when force-loaded on 0.2.2. Upgrade dsh-ops
+  to 0.5.0+ (or remove its version exemption) and settings writes recover;
+  this plugin's remote.settings channel was correct all along.
+- Write diagnostics: refused RPC answers now log the thrower message and
+  stack head to the console (JSON.stringify hides prototype-chain
+  properties such as error.message).
+- Key tip copy now points at the durable key management entry:
+  Settings > Plugin Market > Installed > dsh-effort-auto-toggle (the host
+  renders the full volatile form there — key, endpoint, scorer model, mode).
+
 ## 0.2.7 — 2026-11-06
 
 - Fixed the toggle button on DSH 0.2.2-rc.1: client writes now go through the
