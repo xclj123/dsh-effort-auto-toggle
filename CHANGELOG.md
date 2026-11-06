@@ -1,5 +1,16 @@
 # 变更记录
 
+## 0.2.7 — 2026-11-06
+
+- Fixed the toggle button on DSH 0.2.2-rc.1: client writes now go through the
+  official remote.settings RPC (permission-presets precedent) instead of the
+  broken form.set path, falling back to scope.set on older hosts.
+- Reverted the 0.2.6 arming workaround: the armed source of truth is the
+  settings value again (liveCfg per request), override-state.json is back to
+  pure override memory (effort / preAutoEffort).
+- The toggle can be pressed repeatedly again (arm and disarm at will).
+(0.2.6 was an unpublished local workaround build.)
+
 ## 0.2.5 — 2026-11-05
 - Removed the dead `settings.plugin.item` slot injection and the
   `AutoToggleCard` component: that slot does not exist in any DSH host

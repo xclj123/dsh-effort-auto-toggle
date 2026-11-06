@@ -71,9 +71,9 @@ function harness(overrides = {}, efforts = [{ id: 'low' }, { id: 'high' }, { id:
   const claim = (text, turn = 1) =>
     handlers.get('agent/inbox/claimed').cb({ message: { role: 'user', content: [{ type: 'text', text }] }, turn, agent: agentOf() });
   const broadcast = (session, event) => handlers.get('session/event').cb(session, event);
-  // 0.2.6: the toggle's source of truth is override-state.json (the host
-  // settings write path is dead on 0.2.2-rc.1); arm() simulates the file flip.
-  const arm = (on) => writeFileSync(join(dir, 'override-state.json'), JSON.stringify({ sessionId: null, autoOn: on, ts: Date.now() }));
+  // 0.2.7: the toggle's source of truth is back to the settings value (the
+  // client writes through the remote.settings RPC); arm() flips the store.
+  const arm = (on) => { store.autoOn = on; };
   return { dir, logs, request, claim, store, broadcast, selection, selectCalls, arm, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 

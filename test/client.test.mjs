@@ -47,8 +47,9 @@ function makeCtx() {
   const registrations = [];
   const settings = [];
   const servedScopes = new Map();
+  const describeState = { value: { view: { namespaces: [{ ns: 'dsh-effort-auto-toggle', revision: 7 }] } } };
   const configForms = {
-    describe: () => ({ getSnapshot: () => ({ view: { namespaces: [{ ns: 'dsh-effort-auto-toggle' }] } }) }),
+    describe: () => ({ getSnapshot: () => describeState.value, acceptView: (v) => { describeState.value = v; } }),
     get: (ns) => {
       if (!servedScopes.has(ns)) servedScopes.set(ns, fakeScope({}));
       return servedScopes.get(ns);
@@ -92,6 +93,23 @@ function attachSessions(harness, { sessionId = 'sess-1', effort = 'low' } = {}) 
   return face;
 }
 
+
+// 0.2.7: fake remote.settings RPC service; must be attached BEFORE apply so
+// the nested inject captures it (same pattern as attachSessions).
+function attachRemote(harness) {
+  const remoteCalls = [];
+  const { ctx } = harness;
+  ctx.remote = {
+    settings: {
+      update: (ns, patch, revision) => {
+        remoteCalls.push({ ns, patch: { ...patch }, revision });
+        return Promise.resolve({ ok: true, value: { view: { namespaces: [{ ns, revision: revision + 1 }] } } });
+      },
+    },
+  };
+  return { remoteCalls };
+}
+
 function fakeScope(value) {
   const calls = [];
   const scope = {
@@ -119,7 +137,7 @@ test('bundle loads and exports apply/inject', () => {
   const bundle = loadBundle();
   assert.equal(bundle.id, 'dsh-effort-auto-toggle');
   assert.equal(typeof bundle.exports.apply, 'function');
-  assert.deepEqual([...bundle.exports.inject], ['slots', 'locale', 'configForms']);
+  assert.deepEqual([...bundle.exports.inject], ['slots', 'locale', 'configForms', 'remote', 'remote.settings']);
 });
 
 test('message badge jump aligns to the turn HEAD row, not the tail', () => {
@@ -319,4 +337,42 @@ test('key tip stays hidden when a key is configured or mode is heuristic', () =>
   assert.ok(!flatten(component({ t, scope: heuristic })).some((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip'), 'no popover in heuristic mode');
   const disarmed = fakeScope({ autoOn: false, mode: 'minimax', minimaxApiKey: '' });
   assert.ok(!flatten(component({ t, scope: disarmed })).some((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip'), 'no popover while disarmed');
+});
+
+test('0.2.7 toggle writes through the remote.settings RPC when present', () => {
+  const harness = makeCtx();
+  const { remoteCalls } = attachRemote(harness);
+  loadBundle().exports.apply(harness.ctx);
+  const { component } = harness.registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.input.right');
+  const scope = fakeScope({ autoOn: true });
+  const node = flatten(component({ t, scope })).find((n) => n.type === 'button' && n.props['aria-label'] === 'effort-auto-toggle-button');
+  node.props.onClick();
+  assert.deepEqual(remoteCalls, [{ ns: 'dsh-effort-auto-toggle', patch: { autoOn: false }, revision: 7 }], 'click goes through the RPC channel');
+  assert.deepEqual(scope.calls, [], 'no fallback scope.set when the RPC is available');
+});
+
+test('0.2.7 key tip save batches its patch through the remote channel', () => {
+  const harness = makeCtx();
+  const { remoteCalls } = attachRemote(harness);
+  loadBundle().exports.apply(harness.ctx);
+  const { component } = harness.registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.input.right');
+  const scope = fakeScope({ autoOn: true, mode: 'minimax', minimaxApiKey: '' });
+  const nodes = flatten(component({ t, scope }));
+  const keyInput = nodes.find((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip-key');
+  keyInput.props.onChange({ target: { value: 'sk-remote-9' } });
+  const save = nodes.find((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip-save');
+  save.props.onClick();
+  assert.deepEqual(remoteCalls, [{ ns: 'dsh-effort-auto-toggle', patch: { minimaxApiKey: 'sk-remote-9' }, revision: 7 }]);
+});
+
+test('0.2.7 keep-heuristic writes the mode switch through the remote channel', () => {
+  const harness = makeCtx();
+  const { remoteCalls } = attachRemote(harness);
+  loadBundle().exports.apply(harness.ctx);
+  const { component } = harness.registrations.find((r) => r.kind === 'slot' && r.spec.name === 'conversation.input.right');
+  const scope = fakeScope({ autoOn: true, mode: 'minimax', minimaxApiKey: '' });
+  const nodes = flatten(component({ t, scope }));
+  const keep = nodes.find((n) => n.props && n.props['aria-label'] === 'effort-auto-toggle-keytip-heuristic');
+  keep.props.onClick();
+  assert.deepEqual(remoteCalls, [{ ns: 'dsh-effort-auto-toggle', patch: { mode: 'heuristic' }, revision: 7 }]);
 });
