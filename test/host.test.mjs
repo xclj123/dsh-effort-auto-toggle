@@ -7,7 +7,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { format } from 'node:util';
@@ -71,7 +71,10 @@ function harness(overrides = {}, efforts = [{ id: 'low' }, { id: 'high' }, { id:
   const claim = (text, turn = 1) =>
     handlers.get('agent/inbox/claimed').cb({ message: { role: 'user', content: [{ type: 'text', text }] }, turn, agent: agentOf() });
   const broadcast = (session, event) => handlers.get('session/event').cb(session, event);
-  return { dir, logs, request, claim, store, broadcast, selection, selectCalls, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  // 0.2.6: the toggle's source of truth is override-state.json (the host
+  // settings write path is dead on 0.2.2-rc.1); arm() simulates the file flip.
+  const arm = (on) => writeFileSync(join(dir, 'override-state.json'), JSON.stringify({ sessionId: null, autoOn: on, ts: Date.now() }));
+  return { dir, logs, request, claim, store, broadcast, selection, selectCalls, arm, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 const userMsg = (text) => ({ type: 'user/message', data: { role: 'user', content: [{ type: 'text', text }] } });
@@ -119,7 +122,7 @@ test('passthrough: manual "off" on a forced-thinking model is clamped to low', a
 test('armed: every scheduled effort is a real wire tier, never auto/off/medium', async () => {
   const h = harness();
   try {
-    h.store.autoOn = true;
+    h.arm(true);
     for (const text of ['hi', 'refactor the whole scheduler and add tests for every branch', '跑一下测试']) {
       const out = await h.request({ reasoningEffort: AUTO }, [userMsg(text)]);
       assert.ok(WIRE.includes(out.reasoningEffort), `bad tier ${out.reasoningEffort}`);
@@ -133,9 +136,9 @@ test('armed: every scheduled effort is a real wire tier, never auto/off/medium',
 test('disarm: the first request after the button goes dark restores the pre-auto manual effort', async () => {
   const h = harness();
   try {
-    h.store.autoOn = true;
+    h.arm(true);
     const armed = await h.request({ reasoningEffort: 'max' }, [userMsg('hi')]);
-    h.store.autoOn = false;
+    h.arm(false);
     const restored = await h.request({ reasoningEffort: armed.reasoningEffort }, [userMsg('hi')]);
     assert.equal(restored.reasoningEffort, 'max');
     const after = await h.request({ reasoningEffort: 'low' }, [userMsg('hi')]);
@@ -154,7 +157,7 @@ test('disabled: config.enabled=false skips everything', async () => {
 test("continuity is session-scoped: another session recent tool calls do not pin a fresh low message", async () => {
   const h = harness();
   try {
-    h.store.autoOn = true;
+    h.arm(true);
     h.broadcast({ id: 'sess-other' }, { type: 'tool/call', data: { name: 'bash', arguments: 'x'.repeat(1290) } });
     const out = await h.request({ reasoningEffort: AUTO }, [userMsg('你好')]);
     assert.equal(out.reasoningEffort, 'low');
@@ -164,7 +167,7 @@ test("continuity is session-scoped: another session recent tool calls do not pin
 test('continuity still pins low within the same session after recent tool activity', async () => {
   const h = harness();
   try {
-    h.store.autoOn = true;
+    h.arm(true);
     h.broadcast({ id: 'sess-1' }, { type: 'tool/call', data: { name: 'bash', arguments: 'x'.repeat(900) } });
     const out = await h.request({ reasoningEffort: AUTO }, [userMsg('你好')]);
     assert.equal(out.reasoningEffort, 'high');
@@ -202,7 +205,7 @@ test('armed on a 5-level model: the scheduler emits real levels (ultra/heighx), 
   const five = [{ id: 'low' }, { id: 'high' }, { id: 'highx' }, { id: 'max' }, { id: 'ultra' }];
   const h = harness({}, five);
   try {
-    h.store.autoOn = true;
+    h.arm(true);
     // three heavy keywords (refactor+debug+race) -> heuristic high -> highx
     const out = await h.request({ reasoningEffort: AUTO }, [userMsg('refactor the debug flow and fix it:\n```\nsome code\n```\nand keep the tail explicit')]);
     assert.equal(out.reasoningEffort, 'highx');
@@ -228,7 +231,7 @@ function loopValidate(out, selection) {
 test('modern claimed: a simple message selects low at claim time; the request stays read-only', async () => {
   const h = harness({}, undefined, { modern: true });
   try {
-    h.store.autoOn = true;
+    h.arm(true);
     h.claim('hi');
     assert.ok(h.selectCalls.some((s) => s.reasoningEffort === 'low'), 'claim must select low via agent.model.select');
     const sel = { ...h.selection };
@@ -240,7 +243,7 @@ test('modern claimed: a simple message selects low at claim time; the request st
 test('modern request: an unclaimed turn queues the desired effort for the next step and never rewrites this one', async () => {
   const h = harness({}, undefined, { modern: true });
   try {
-    h.store.autoOn = true;
+    h.arm(true);
     const sel = { ...h.selection }; // adapter default max
     const out = await h.request({ reasoningEffort: 'max' }, [userMsg('hi')]); // desired low, wire max
     loopValidate(out, sel);
@@ -251,7 +254,7 @@ test('modern request: an unclaimed turn queues the desired effort for the next s
 test('modern continuity: recent tool activity in the session pins the claim-time low up to high', async () => {
   const h = harness({}, undefined, { modern: true });
   try {
-    h.store.autoOn = true;
+    h.arm(true);
     h.broadcast({ id: 'sess-1' }, { type: 'tool/call', data: { name: 'bash', arguments: 'x'.repeat(900) } });
     h.claim('你好');
     assert.ok(h.selectCalls.some((s) => s.reasoningEffort === 'high'), 'continuity must bump the claim-time selection');
@@ -261,10 +264,10 @@ test('modern continuity: recent tool activity in the session pins the claim-time
 test('modern disarm: the first passthrough after going dark restores the pre-auto manual pick via select()', async () => {
   const h = harness({}, undefined, { modern: true });
   try {
-    h.store.autoOn = true;
+    h.arm(true);
     await h.request({ reasoningEffort: 'max' }, [userMsg('hi')]); // arms; pre-auto wire was max; queues low
     const armedCalls = h.selectCalls.length;
-    h.store.autoOn = false;
+    h.arm(false);
     const sel = { ...h.selection }; // low (our queued select)
     const out = await h.request({ reasoningEffort: 'low' }); // passthrough
     loopValidate(out, sel);
@@ -275,9 +278,9 @@ test('modern disarm: the first passthrough after going dark restores the pre-aut
 test('modern disarmed claim: manual off on a forced-thinking model is clamped to low once the ladder is cached', async () => {
   const h = harness({}, undefined, { modern: true });
   try {
-    h.store.autoOn = true;
+    h.arm(true);
     await h.request({ reasoningEffort: 'max' }, [userMsg('hi')]); // fills ladderCache via the llm service
-    h.store.autoOn = false;
+    h.arm(false);
     h.selection.reasoningEffort = 'off';
     h.claim('hi');
     assert.ok(h.selectCalls.some((s) => s.reasoningEffort === 'low'), 'off must be clamped to the ladder floor on forced-thinking models');

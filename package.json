@@ -1,6 +1,6 @@
 {
   "name": "dsh-effort-auto-toggle",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "DSH plugin: an Auto toggle next to the model selector that schedules reasoning_effort per request. Model-adaptive since 0.2.0 — the model's real effort ladder (low/high/max, or low/high/highx/max/ultra, ...) is read from the host llm service and the scheduler's semantic tiers map onto it. MiniMax/OpenAI-compatible scorer with heuristic fallback (fallbacks not cached), session-scoped tool-continuity upgrades, per-reply badge and lit-button tier label in the adapter's own (English) effort ids, JSONL token ledger. No fake 'auto' entry in the effort dropdown (the original dsh-adaptive-effort UNSUPPORTED_REASONING_EFFORT bug); manual off clamped on forced-thinking models (GLM-5.3).",
   "type": "module",
   "files": [
