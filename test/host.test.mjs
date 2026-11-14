@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { format } from 'node:util';
-import { apply, DEFAULT_CONFIG } from '../lib/index.js';
+import { apply, DEFAULT_CONFIG , statsSummaryOf} from '../lib/index.js';
 
 const AUTO = 'auto';
 const WIRE = ['off', 'low', 'high', 'max'];
@@ -294,5 +294,72 @@ test('modern host with auto dark: a passthrough request is returned untouched (n
     const out = await h.request({ reasoningEffort: 'max' });
     loopValidate(out, sel);
     assert.equal(h.selectCalls.length, 0, 'nothing should be selected while auto was never armed');
+  } finally { h.cleanup(); }
+});
+
+// ===== 0.3.0 adaptive signals =====
+const usageEvent = (turn, step, inputTokens, outputTokens) => ({
+  type: 'assistant/message',
+  data: { turn, step, usage: { inputTokens, outputTokens }, message: { source: { provider: 'bigmodel', model: 'glm-5.3-3-step' } } },
+});
+
+test('0.3.0 retry: resending the same message within 3 minutes bumps the tier', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.arm(true);
+    h.claim('帮我起个游戏id', 1);
+    assert.equal(h.selectCalls.at(-1).reasoningEffort, 'low', 'first send scores low');
+    h.claim('帮我起个游戏id', 2);
+    const second = h.selectCalls.at(-1).reasoningEffort;
+    assert.notEqual(second, 'low', 'resend must not stay low');
+    assert.ok(second === 'high' || second === 'max', 'resend bumps to high/max, got ' + second);
+  } finally { h.cleanup(); }
+});
+
+test('0.3.0 context: a >100k-token conversation stops scoring low on the next message', async () => {
+  const h = harness();
+  try {
+    h.arm(true);
+    await h.request({ reasoningEffort: 'high' }, [userMsg('帮我起个游戏id'), usageEvent(1, 1, 130000, 200)], 1, 1);
+    const out = await h.request({ reasoningEffort: 'high' }, [userMsg('在吗'), usageEvent(1, 1, 130000, 200)], 1, 1);
+    assert.notEqual(out.reasoningEffort, 'low', 'long context must not schedule low');
+  } finally { h.cleanup(); }
+});
+
+test('0.3.0 difficulty: a 12-step previous turn pins the next low message up to high', async () => {
+  const h = harness();
+  try {
+    h.arm(true);
+    const events = [userMsg('深挖')];
+    for (let s = 1; s <= 12; s += 1) events.push(usageEvent(1, s, 5000, 300));
+    await h.request({ reasoningEffort: 'high' }, events, 1, 1);
+    const out = await h.request({ reasoningEffort: 'high' }, [userMsg('帮我起个游戏id')], 2, 1);
+    assert.notEqual(out.reasoningEffort, 'low', 'a hard prior turn must not schedule low');
+  } finally { h.cleanup(); }
+});
+
+test('0.3.0 stats: the savings summary computes against the always-max baseline', async () => {
+  const h = harness();
+  try {
+    h.arm(true);
+    const events = [userMsg('x')];
+    // 4 low steps (out 100) + 1 max step (out 600): always-max est = 600*5 = 3000, actual = 1000 -> saved ~67%
+    for (let s = 1; s <= 4; s += 1) events.push(usageEvent(1, s, 5000, 100));
+    events.push(usageEvent(1, 5, 5000, 600));
+    await h.request({ reasoningEffort: 'low' }, events, 1, 1);
+    await new Promise((r) => setTimeout(r, 30)); // let the throttled push settle
+    assert.ok(/^saved ~\d+% output tokens vs always-max \(\d+ steps\)$/.test(h.store.statsSummary || ''), 'summary=' + h.store.statsSummary);
+    // pure-function check of the full-turn math: 4 low (100) + 1 max (600) -> est 3000, actual 1000 -> 67%
+    const sig = { steps: 5, outTokens: 1000, tierOut: new Map([['low', 400], ['max', 600]]), tierSteps: new Map([['low', 4], ['max', 1]]) };
+    assert.ok(statsSummaryOf(sig).includes('saved ~67%'), statsSummaryOf(sig));
+  } finally { h.cleanup(); }
+});
+
+test('0.3.0 stats: no boost leaks into a clean fresh session (regression)', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.arm(true);
+    h.claim('帮我起个游戏id', 1);
+    assert.equal(h.selectCalls.at(-1).reasoningEffort, 'low', 'clean session still scores low');
   } finally { h.cleanup(); }
 });

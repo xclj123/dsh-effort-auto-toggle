@@ -1,5 +1,11 @@
 # 变更记录
 
+## 0.3.0 — 2026-11-14
+
+- Adaptive signals: resending the same message within 3 min bumps the tier (retry boost); conversations over 100k input tokens never schedule low (context boost); a hard prior turn (12+ steps) pins the next low up to high (difficulty boost).
+- Savings stats: hover the toggle button to see live 'saved ~N% output tokens vs always-max' (per-session accumulator, pushed to settings at most every 30 min).
+- Key tip card: pinned light glass styling (0.2.9).
+
 ## 0.2.9 — 2026-11-14
 
 - First-run key tip card: pinned light glass styling (white card, dark text) so it reads well on any theme; softer shadow.
