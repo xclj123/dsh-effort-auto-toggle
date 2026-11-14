@@ -1,5 +1,9 @@
 # 变更记录
 
+## 0.2.9 — 2026-11-14
+
+- First-run key tip card: pinned light glass styling (white card, dark text) so it reads well on any theme; softer shadow.
+
 ## 0.2.8 — 2026-11-06
 
 - Root-caused the "toggle cannot be disarmed" reports on DSH 0.2.2-rc.1: the
