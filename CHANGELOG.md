@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.3.2 — 2026-11-14
+
+Signal engine scoped down to keep the plugin's original promise: simple messages run cheap.
+
+- Removed the retry / long-context / prior-hard-turn boosts introduced in 0.3.0 — none of them may pin a message away from low on its own merits.
+- Kept: tool-failure boost (2+ real tool failures within 10 min stop the next low) and the calm drop (two consecutive short successful turns drop heuristic highs back to low; minimax verdicts are never overridden).
+- Kept: the savings tooltip.
+- 40 tests green.
+
 ## 0.3.1 — 2026-11-14
 
 True failure signals on top of 0.3.0.
