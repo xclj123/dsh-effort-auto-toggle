@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.3.1 — 2026-11-14
+
+True failure signals on top of 0.3.0.
+
+- Failure boost: two failed tool results within 10 minutes (non-zero exit codes, timeouts, tracebacks, sandbox denials) stop the next message from scheduling low.
+- Calm drop: after two consecutive short successful turns (≤6 steps, no failures), heuristic-source highs drop back to low; minimax verdicts are never overridden.
+- Streak settle now runs once per turn at claim time (request-step double settle fixed).
+- 43 tests green.
+
 ## 0.3.0 — 2026-11-14
 
 - Adaptive signals: resending the same message within 3 min bumps the tier (retry boost); conversations over 100k input tokens never schedule low (context boost); a hard prior turn (12+ steps) pins the next low up to high (difficulty boost).

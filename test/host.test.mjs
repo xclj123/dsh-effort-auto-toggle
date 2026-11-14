@@ -363,3 +363,46 @@ test('0.3.0 stats: no boost leaks into a clean fresh session (regression)', asyn
     assert.equal(h.selectCalls.at(-1).reasoningEffort, 'low', 'clean session still scores low');
   } finally { h.cleanup(); }
 });
+
+// ===== 0.3.1 failure signals =====
+const toolResultEvent = (turn, step, text) => ({
+  type: 'tool/result',
+  data: { turn, step, message: { role: 'tool', toolCallId: 'call_' + turn + '_' + step, content: [{ type: 'text', text }] } },
+});
+
+test('0.3.1 fail boost: two failed tool results within 10 min stop the next low', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.arm(true);
+    h.broadcast({ id: 'sess-1' }, toolResultEvent(1, 1, 'ok listing'));
+    h.broadcast({ id: 'sess-1' }, toolResultEvent(1, 2, 'python script output\n[exit code: 1]'));
+    h.broadcast({ id: 'sess-1' }, toolResultEvent(1, 3, '[EXIT_CODE; effects: unknown; retry: never] Do not repeat.'));
+    h.claim('帮我起个游戏id', 2);
+    assert.equal(h.selectCalls.at(-1).reasoningEffort, 'high', 'two failures must bump low to high');
+  } finally { h.cleanup(); }
+});
+
+test('0.3.1 fail boost: one failure alone does not bump', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.arm(true);
+    h.broadcast({ id: 'sess-1' }, toolResultEvent(1, 1, 'Traceback (most recent call last):\n  File "<stdin>"'));
+    h.claim('帮我起个游戏id', 2);
+    assert.equal(h.selectCalls.at(-1).reasoningEffort, 'low', 'single failure stays low');
+  } finally { h.cleanup(); }
+});
+
+test('0.3.1 calm: two short successful turns drop heuristic high back to low', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.arm(true);
+    // turn 1: 3 steps, no failures -> streak 1 (after turn 2 claim)
+    await h.request({ reasoningEffort: 'high' }, [userMsg('看看这个目录结构'), usageEvent(1, 1, 5000, 100), usageEvent(1, 2, 5000, 100), usageEvent(1, 3, 5000, 100)], 1, 1);
+    h.claim('帮我重构这个模块的架构：\n```\ncode\n```\n看看', 2); // 2 heavy keywords + fence -> 36 heuristic high, streak=1, calm not yet
+    assert.equal(h.selectCalls.at(-1).reasoningEffort, 'high', 'streak 1 keeps heuristic high');
+    // turn 2: 2 more clean steps -> streak 2 at turn 3 claim
+    await h.request({ reasoningEffort: 'high' }, [userMsg('再看一下配置文件'), usageEvent(2, 1, 5000, 100), usageEvent(2, 2, 5000, 100)], 2, 1);
+    h.claim('再优化一下这段代码的性能：\n```\ncode\n```\n看看', 3); // heuristic high, calm drops to low
+    assert.equal(h.selectCalls.at(-1).reasoningEffort, 'low', 'two calm turns must drop heuristic high to low');
+  } finally { h.cleanup(); }
+});
