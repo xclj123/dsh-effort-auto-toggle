@@ -1,5 +1,94 @@
 # 变更记录
 
+## 0.3.4 — 2026-11-17
+
+The three follow-ups from the 0.3.3 review, plus the accounting moved off a
+deprecated upstream hook.
+
+- **Fixed: the 800–3199 dead zone in the scheduler.** Any tool call under 3200
+  characters was a no-op — the code logged "below the upgrade threshold" and
+  changed nothing, so a 3000-character `apply_patch` counted for exactly as much
+  as a bare `ls`. Escalation is now graded: ≥800 chars buys one rung, ≥3200
+  buys two (`rungsForArgs`), saturating at the top of the ladder. A `low`
+  verdict with a 2000-character call now runs `high` instead of `low`.
+- **Fixed: continuity and the scheduler double-counted the same evidence.**
+  With graded rungs the old standalone continuity lift became a second opinion
+  on the same tool calls (low → continuity high → one more rung → max). The
+  continuity lift is gone; continuity now owns only the *time window*
+  (`CONTINUITY_WINDOW_MS`) and the scheduler owns the *size policy*
+  (`rungsForArgs`). One decision, one place.
+- **Added: scorer backoff.** A scorer failure was correctly not cached as a
+  verdict, but that also meant every later step in the same turn re-paid the
+  full `scoreTimeoutMs` against a dead endpoint. `ScorerBackoff` remembers the
+  *failure* for 60 s (bounded at 128 entries), so the heuristic verdict applies
+  immediately and the network attempt waits for a human-scale retry.
+- **Fixed: the ledger no longer depends on the deprecated `agent/request` hook.**
+  Usage rows are now written the moment the host reports them, straight from the
+  `session/event` stream. `agent/request` is kept only as a catch-up sweep for
+  rows that predate the plugin or arrive on a host whose event stream is not
+  wired; `recordUsage()` dedupes by `session:turn:step`, so the two paths cannot
+  double-write. `agent/request` is `@deprecated` upstream ("do not add new
+  listeners"), and the click-time decision already rides `agent.model.select()`.
+- **Fixed: ledger rows could be written out of order.** Appends are
+  fire-and-forget, so a live step-2 row could race the catch-up sweep's step-1
+  row and land first — `report --last` then read a session shuffled. `Ledger`
+  now chains its writes through an internal promise queue, keeping the file
+  chronological without making any caller wait.
+- **Added: claim-time attribution.** The claim decision is published onto the
+  turn's first step in `pending`, so a session logs a real `tier` /
+  `classifierSource` even on a host that never calls `agent/request` at all.
+- Tests: 47 → 60.
+
+## 0.3.3 — 2026-11-17
+
+dsh 0.2.2-rc.3 compatibility pass, plus the routing fix the ledger was pointing at.
+
+- **Fixed: no usage reached the ledger on rc.3.** `Session` lost its `events`
+  getter in 0.2.2-rc.3, so every read returned `[]` and usage rows fell through
+  to the `unknown` fallback. `readEvents()` now probes `snapshotEvents()` →
+  `ownEvents()` → `eventAt()`/`seq` → the legacy `events` array, in that order,
+  so both rc.3 and older hosts are covered.
+- **Fixed: a light tool call counted as continuity.** Any `tool/call` in the
+  last 10 minutes pinned a `low` verdict to high (or max), so a bare `ls`
+  between two chat messages kept the whole session expensive. Continuity now
+  requires a call with at least 800 characters of arguments — the same floor the
+  scheduler already uses for a heavy call. In the local ledger 2825 of 4155
+  classified rows had been lifted this way.
+- **Fixed: continuity climbed the ladder by itself.** The lift target was
+  `lastOverride.effort === last rung ? 'max' : 'high'`, and every scheduled step
+  rewrites `lastOverride.effort` with the effort it just picked. So the first
+  time one step reached max, every subsequent low verdict was lifted straight to
+  max — a conversation scored 20 throughout (a plain "simple") marched
+  low → high → max on its own. One continuity lift now means exactly one rung
+  (`high`), with no read of the previous pick.
+- **Fixed: the heuristic half could overrule the scorer.** The fusion rule was
+  "whichever score is higher wins", so a single keyword from the heavy list
+  (or a long paste) replaced a confident `low`. The scorer is now authoritative;
+  the heuristic only overrides when it has an explicit heavy pile-up (score ≥ 70)
+  against a low verdict.
+- **Fixed: the report dropped highx/ultra rows.** `buildReport` bucketed on the
+  wire effort id against a hardcoded `low/high/max` list, so five-level models
+  landed in no bucket at all. The report now groups *dynamically* by the effort
+  that actually ran (lightest first, unknown ids last) and prints the
+  classifier's own verdict as a second table — a verdict is not a run, so a
+  semantic `low` on a single-level model shows up as `high` in both.
+- **Fixed: the savings estimate could read zero.** The counterfactual was
+  "non-max steps × (max mean − overall mean)", which silently collapsed because
+  the heaviest bucket is often made of *short* steps (a max step that answers in
+  one line) and the max mean could sit below the high mean. It is now
+  `steps × costliest-observed-mean − actual total`. On the local ledger this
+  moved the number from 0 to ~1.4M tokens.
+- **Added: prompt-cache accounting.** Ledger rows now carry `cacheReadTokens` /
+  `cacheWriteTokens`; dsh reports usage counts disjointly, so `inputTokens`
+  alone was only the uncached half of the prompt.
+- **Fixed: client dependency list.** `dsh.client.inject` named
+  `dsh-client-runtime` and `dsh-client-ui-slots`, neither of which exists in
+  rc.3. Replaced with the four packages that actually serve `slots` / `locale` /
+  `configForms` / `remote.settings` today.
+- Tests: 40 → 47, and the host mock now mirrors the rc.3 session shape
+  (`snapshotEvents`, no `events`) instead of the legacy array, so this class of
+  drift fails the suite instead of production.
+
 ## 0.3.2 — 2026-11-14
 
 Signal engine scoped down to keep the plugin's original promise: simple messages run cheap.

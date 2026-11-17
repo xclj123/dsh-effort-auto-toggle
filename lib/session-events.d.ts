@@ -1,10 +1,14 @@
 /**
  * Session event sampling for dsh-effort-auto-toggle.
  *
- * Defensive extraction from `payload.agent.session.events` — the part most
- * exposed to dsh event-shape drift — kept unit-testable in isolation with
- * explicit guards instead of naked type assertions. Shapes verified against
- * deepseek-harness packages/core/agent-loop/src/agent.ts (2026-08):
+ * Defensive extraction from the session event log handed over by the host —
+ * the part most exposed to dsh event-shape drift — kept unit-testable in
+ * isolation with explicit guards instead of naked type assertions.
+ *
+ * The log itself is read by `readEvents()` in `index.js`: dsh 0.2.2-rc.3
+ * removed the `session.events` getter, so the reader probes
+ * `snapshotEvents()` / `ownEvents()` / `eventAt()` and only then the legacy
+ * array. Shapes verified against dsh-session + dsh-llm (0.2.2-rc.3):
  *
  * - `user/message`      data = the message object (role/content blocks)
  * - `assistant/message` data = { turn, step, message: { source: { provider,
@@ -22,6 +26,10 @@ export interface SampledUsage {
     step: number;
     provider: string;
     model: string;
+    /** Prompt tokens served from the cache (disjoint from `inputTokens`). */
+    cacheReadTokens: number;
+    /** Prompt tokens written into the cache (disjoint from `inputTokens`). */
+    cacheWriteTokens: number;
     inputTokens: number;
     outputTokens: number;
 }

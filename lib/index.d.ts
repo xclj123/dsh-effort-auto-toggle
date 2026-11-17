@@ -18,18 +18,23 @@
  *
  * Scoring: a MiniMax-compatible chat completion call (thinking disabled —
  * fast and cheap; zero-dependency heuristic fallback when the key/network is
- * unavailable; fallback results are NOT cached so the next message retries
- * the scorer), heavy tool payloads may only upgrade the tier (continuity,
- * session-scoped since 0.1.5), manual wire picks in the model selector
+ * unavailable; a failure is negatively cached for 60 s so a dead endpoint is
+ * not re-paid on every step, then retried), heavy tool payloads may only
+ * upgrade the tier, graded by payload size since 0.3.4 (>= 800 argument
+ * characters buys one rung on low -> high -> max, >= 3200 buys two), manual
+ * wire picks in the model selector
  * always win, and forced-thinking models (GLM-5.3) get a manual `off`
  * clamped to the ladder's lightest rung instead of an API error. Every
  * decision plus the observed per-step token usage lands in a JSONL ledger
  * (~/.dsh/effort-auto-toggle) with a markdown report (lib/report.js).
  *
  * Extension points:
+ * - `session/event` usage records — the ledger's PRIMARY write path since
+ *   0.3.4: a usage row lands as soon as the host reports it, deduped by
+ *   `session:turn:step`, so accounting no longer depends on a deprecated hook;
  * - `agent/request` waterfall (registered `prepend` so the session
- *   model-selection assembly cannot overwrite the decision);
- * - `session/event` usage records (the ledger's token source);
+ *   model-selection assembly cannot overwrite the decision; on 0.2.2+ hosts it
+ *   is read-only and kept only for the payload plus a catch-up sweep);
  * - `llm` service: resolveModelInfo for per-model effort ladders;
  * - `settings` service (modern describe/update API, ns = profile entry id)
  *   for runtime-adjustable toggles — the volatile fields below.

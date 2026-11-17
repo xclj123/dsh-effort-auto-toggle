@@ -1,8 +1,8 @@
 /**
  * Token ledger for dsh-effort-auto-toggle — the effort-router-style accounting
  * half: per-step JSONL records (tier + effort + usage), then a Chinese report
- * with per-tier usage, a downshift savings estimate, and misroute flags
- * (low-tier turns that ballooned, high/max turns that stayed tiny).
+ * with per-level usage, a downshift savings estimate, and misroute flags
+ * (lightest-level turns that ballooned, heavy turns that stayed tiny).
  *
  * Storage: one JSONL file per session under the ledger dir
  * (default `~/.dsh/effort-auto-toggle`); append-only, best-effort writes.
@@ -24,8 +24,16 @@ export interface LedgerRecord {
     reason: string;
     classifierSource: string;
     classifierScore: number;
+    /**
+     * Uncached input tokens. dsh reports usage counts disjointly: the cached
+     * prompt is `cacheReadTokens` / `cacheWriteTokens`, not part of this field.
+     */
     inputTokens: number;
     outputTokens: number;
+    /** Prompt tokens served from the cache. */
+    cacheReadTokens: number;
+    /** Prompt tokens written into the cache. */
+    cacheWriteTokens: number;
 }
 /** Default ledger root. */
 export declare function defaultLedgerDir(): string;
@@ -49,23 +57,44 @@ export declare class Ledger {
 }
 /** Parse JSONL text into records, skipping malformed lines. */
 export declare function parseLedgerLines(text: string): LedgerRecord[];
-/** Aggregate stats for one tier bucket. */
-export interface TierStats {
-    tier: AutoTier;
+/** Token totals shared by both report groupings. */
+export interface BucketStats {
     steps: number;
     outputTokens: number;
+    /** Uncached input tokens (cached prompt is reported in `cacheReadTokens`). */
+    inputTokens: number;
+    cacheReadTokens: number;
     meanOutput: number;
+}
+/** Aggregate stats for one wire-effort bucket (`low`, `high`, `highx`, `max`, ...). */
+export interface EffortStats extends BucketStats {
+    /** Wire effort id that actually ran. `unknown` when the record carried none. */
+    effort: string;
+}
+/** Aggregate stats for one classifier-verdict bucket (semantic tier). */
+export interface TierStats extends BucketStats {
+    tier: AutoTier;
 }
 /** The full report payload (Chinese strings live in `renderReport`). */
 export interface EffortReport {
     records: LedgerRecord[];
+    /**
+     * Grouped by the wire effort that actually executed, lightest first. Dynamic
+     * because the id space is model-specific: single-level models report only
+     * `high`, five-level models add `highx`/`ultra`.
+     */
+    byEffort: EffortStats[];
+    /**
+     * Grouped by the classifier's own verdict, for comparison. A verdict is not
+     * a run: a semantic `low` on a single-level model executes as `high`.
+     */
     byTier: TierStats[];
     totalOutput: number;
-    /** Estimated tokens saved by downshifting vs a max-everything baseline. */
+    /** Estimated tokens saved by downshifting vs an always-heaviest baseline. */
     estimatedSaved: number;
-    /** Downshifted steps whose output ballooned beyond the high-tier mean. */
+    /** Lightest-level steps whose output ballooned beyond the high-level mean. */
     misroutesLowBallooned: LedgerRecord[];
-    /** high/max steps whose output stayed tiny. */
+    /** high-and-above steps whose output stayed tiny. */
     misroutesOverThought: LedgerRecord[];
 }
 /** Aggregate ledger records into the report payload. */

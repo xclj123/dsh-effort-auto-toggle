@@ -27,10 +27,19 @@ passthrough path, killing that class of errors at the root.
   (thinking disabled on the scorer call — fast and cheap); zero-dependency
   heuristic fallback (keywords + length + code fences) when the key, network
   or timeout fails. Fallback results are NOT cached — the next message
-  retries the scorer.
-- **Tool-continuity upgrade** (session-scoped): a low-tier pick upgrades when
-  heavy tool calls appear within 10 minutes in the SAME session, so long
-  tool chains don't break on the lightest rung.
+  retries the scorer. **A scorer failure is now negatively cached for 60 s**
+  (0.3.4): during the cooldown the heuristic verdict applies immediately instead
+  of paying a full timeout on every step, and the scorer is retried once the
+  cooldown expires. The scorer's verdict is authoritative; the heuristic
+  only overrides it on an explicit heavy-keyword pile-up (score >= 70) against
+  a low verdict (0.3.3).
+- **Graded tool-load escalation** (session-scoped): tool calls inside the last
+  10 minutes buy rungs by argument size — >= 800 characters buys one rung,
+  >= 3200 buys two, saturating at the heaviest rung (0.3.4). The old code had a
+  dead zone: anything between 800 and 3199 characters changed nothing, so a
+  3000-character `apply_patch` was treated exactly like a bare `ls`. A bare `ls`
+  still never lifts the session (0.3.3), a mid-size patch buys one rung, a big
+  one buys two. A hand-picked effort is never escalated.
 - **Manual wins**: a hand-picked effort always passes through untouched,
   including adapter-specific names like `ultra`.
 - **GLM-5.3 safe**: a manual `off` on forced-thinking models is clamped to
@@ -43,7 +52,7 @@ passthrough path, killing that class of errors at the root.
 
 ## Requirements
 
-- DeepSeek Harness desktop (verified on the 2026-10 host; anchor list under
+- DeepSeek Harness desktop 0.2.1 through **0.2.2-rc.3** (anchor list under
   "Compatibility")
 - Node.js >= 20 (for the installer and tests; the DSH-bundled node works)
 
@@ -110,6 +119,12 @@ YAML-only fields: `scoreTimeoutMs` (default 9000ms), `clampForcedThinkingOff`
 node lib/report.js <sessionId-prefix>   # per-session scheduling/token report
 ```
 
+The report prints two tables: **actual effort** (bucketed dynamically by the
+effort that really ran — a single-level model shows only `high`, a five-level
+one adds `highx`/`ultra`, lightest first) and **classifier verdict** (bucketed
+by semantic tier). They disagree on purpose: a semantic `low` on a one-level
+model necessarily executes as `high`.
+
 ## Uninstall
 
 ```bash
@@ -143,7 +158,7 @@ button tier labels (incl. degradation without a sessions service).
 
 ## Compatibility
 
-Host anchor points (verified against the 2026-10 desktop asar):
+Host anchor points (verified against the DSH 0.2.2-rc.3 asar):
 
 **DSH 0.2.3+ supports both DSH 0.2.1 and DSH 0.2.2+ (incl. 0.2.2-rc.1)**: the plugin
 probes the host at runtime — legacy hosts keep the `agent/request` rewrite path,
@@ -151,13 +166,20 @@ modern hosts (where effort rides `agent.model.select()` and `agent/request` is
 validated read-only) switch to the claim-time decision path automatically.
 
 - `agent/inbox/claimed` broadcast (the claim-time decision window on 0.2.2+ hosts) and the `agent.model.select()` API
-- `agent/request` waterfall (registered with prepend; read-only on 0.2.2+ hosts)
-- `session/event` (usage backfill into the ledger)
+- `session/event` (**the ledger's primary write path**: a usage row is written as
+  soon as the host reports it, no longer requiring `agent/request` — 0.3.4)
+- `agent/request` waterfall (registered with prepend; read-only on 0.2.2+ hosts,
+  kept only as a catch-up sweep — upstream marks it `@deprecated`, "do not add
+  new listeners")
 - `llm` service `resolveModelInfo(provider, model)` — the 0.2.0 ladder source
 - `settings` service modern `describe` / `update` (ns = profile entry id)
+- `Session` event reads: 0.2.2-rc.3 dropped `Session.events`, so 0.3.3+ probes
+  `snapshotEvents()` → `ownEvents()` → `eventAt()`/`seq` → `events`
 - client side: `conversation.input.right` slot, `modelSelection` session
   projection, `configForms`, `sessions` service (captured via nested
   `ctx.inject`)
+- client package list: `dsh-client-ui-renderer` / `dsh-client-locale` /
+  `dsh-client-ui-settings` / `dsh-api-remotes`
 
 If a host update moves these anchors the plugin needs to follow; issues
 welcome.

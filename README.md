@@ -20,9 +20,13 @@ DeepSeek Harness（DSH）桌面版的推理档位自动调度插件：在输入�
   轻 → 最轻档、重 → 最重档、中 → 约 2/3 处（3 档→第 2 档，5 档→第 3 档）。
 - **复杂度打分**：MiniMax / 任何 OpenAI 兼容端点的小模型（打分时关闭思考，快且便宜）给
   最近一条用户消息打分；无 key / 超时 / 网络不可用时回退零依赖启发式（关键词 + 长度 +
-  代码块），**回退结果不缓存**，下一条消息自动重试打分模型。
-- **工具连续性升级**（会话隔离）：闲聊定低档后，若同会话 10 分钟内出现重工具调用，
-  自动升档，避免长链推理在低档下断链。
+  代码块）。**打分失败会进 60 秒负缓存**（0.3.4）：冷却期内直接用启发式，不再每一步都
+  白等一次 timeout，冷却过后自动重试打分模型。打分器的判定是权威的，
+  启发式只在出现明确重关键词堆叠（分数 ≥ 70）时才推翻低档判定（0.3.3）。
+- **工具负载分级升级**（会话隔离）：同会话 10 分钟内的工具调用按参数体积买档位——
+  ≥ 800 字符升一档、≥ 3200 字符升两档，封顶在最重档（0.3.4）。原来 800–3199 是死区，
+  3000 字符的 `apply_patch` 和一条 `ls` 待遇完全一样；现在一条 `ls` 不抬档、
+  中等补丁升一档、大补丁升两档。手选档位永远不升级。
 - **手动优先**：模型选择器里手选的档位永远原样透传（含各模型独有档名如 `ultra`）。
 - **GLM-5.3 安全**：强制思考模型上手动 `off` 会被钳到最轻档，而不是等 API 报错。
 - **实时显示**：点亮时按钮直接带档位原文（`自动·low` / `自动·highx`），消息角标同步
@@ -96,8 +100,12 @@ node tools/install.mjs --profile "<…>/profiles/desktop" --force <其余参数�
 node lib/report.js <sessionId前缀>     # 汇总某会话的调度与 token 报告
 ```
 
-JSONL 每行一个事件：调度决策（tier / 理由 / 打分来源 / 分数）与 usage 回填
-（实际 input/output token）。
+JSONL 每行一个事件：调度决策（语义 tier / 实际 effort / 理由 / 打分来源 / 分数）与
+usage 回填（output token、未缓存 input token、prompt cache 读/写）。
+
+报表分两张表：**实际档位**（按真正跑过的 effort 动态分桶，单档模型只有 `high`、
+五档模型会有 `highx`/`ultra`，从轻到重排序）与**分类器判定**（按语义 tier 分桶）。
+两者会不一致——那正是重点：语义 `low` 在只有一档的模型上必然执行成 `high`。
 
 ## 卸载
 
@@ -130,19 +138,28 @@ npm test          # 21 个用例，零依赖（node --test），无需 npm insta
 
 ## 兼容性
 
-宿主依赖点（均在 2026-10 桌面版 asar 源码中核实）：
+宿主依赖点（0.3.4 已在 DSH **0.2.2-rc.3** 的 asar 源码里逐条复核）：
 
-**DSH 0.2.3+ 兼容 DSH 0.2.1 与 0.2.2+（含 0.2.2-rc.1）**：插件运行时自动探测宿主能力
-—旧宿主继续走 `agent/request` 改写路径，新宿主（effort 改走 `agent.model.select()`，
-`agent/request` 只读校验）自动切换到 claim-time 决策路径，无需分别安装。
+**兼容 DSH 0.2.1 到 0.2.2-rc.3**：插件运行时自动探测宿主能力——旧宿主继续走
+`agent/request` 改写路径，新宿主（effort 改走 `agent.model.select()`，`agent/request`
+只读校验）自动切换到 claim-time 决策路径，无需分别安装。
 
-- `agent/request` waterfall（prepend 注册；0.2.2+ 宿主上为只读）
-- `session/event`（usage 回填账本）
+- `session/event`（**账本主写入路径**：宿主一报告 usage 就落账，0.3.4 起不再依赖
+  `agent/request` 才能记账）
+- `agent/request` waterfall（prepend 注册；0.2.2+ 宿主上只读，仅用于取 payload 与补扫
+  ——上游标了 `@deprecated`「do not add new listeners」，所以只保留兜底用途）
 - `agent/inbox/claimed` 广播（0.2.2+ 宿主的 claim-time 决策窗口）与 `agent.model.select()` API
+- `Session` 事件读取：0.2.2-rc.3 移除了 `Session.events`，0.3.3 起按
+  `snapshotEvents()` → `ownEvents()` → `eventAt()`/`seq` → `events` 四级探测（前三者在
+  rc.3 标了 `@deprecated` 但仍可用；四级的目的是兼容老宿主与未来再变）
 - `llm` 服务 `resolveModelInfo(provider, model)`（0.2.0 档位表来源）
-- `settings` 服务现代 `describe` / `update`（ns = profile entry id）
+- `settings` 服务现代 `describe` / `update`（ns = profile entry id；rc.3 里
+  `ctx.fiber.entry` 已不存在，插件走 entry id 兜底）
 - client 侧 `conversation.input.right` 插槽、`modelSelection` 会话投影、
   `configForms`、`sessions` 服务（嵌套 `ctx.inject` 捕获）
+- client 注入包名：`dsh-client-ui-renderer` / `dsh-client-locale` /
+  `dsh-client-ui-settings` / `dsh-api-remotes`（rc.3 中实际提供 `slots` / `locale` /
+  `configForms` / `remote.settings` 的四个包）
 
 宿主更新若改动这些锚点，本插件需要跟进；欢迎提 issue。
 
