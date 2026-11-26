@@ -32,7 +32,18 @@ DeepSeek Harness（DSH）桌面版的推理档位自动调度插件：在输入�
 - **实时显示**：点亮时按钮直接带档位原文（`自动·low` / `自动·highx`），消息角标同步
   （`glm-5.3 · low`），档名就是 adapter 自己的英文命名。
 - **账本**：每次调度决策 + 实际 token 用量记 JSONL（`~/.dsh/effort-auto-toggle/`），
-  附带 markdown 汇总报告。
+  附带 markdown 汇总报告。决策先写成独立的 `plan` 行（0.4.0），所以重启、恢复会话、
+  甚至换一个进程来接，用量行都能回溯到当时为什么选这个档位。
+- **手动 vs 回声**（0.4.0）：宿主会把插件自己写过的档位回灌进下一次请求，插件用
+  「基线差分」区分"用户手选"和"自己的回声"——手选立刻被尊重，回声不会误判成手选。
+- **决策 chip**（0.4.0）：按钮 tooltip 里多一行「上次判定」，例如
+  `low · minimax 12 → low`（语义档 · 打分来源 分数 → 实际档位），和统计行共用一次
+  settings 写入，不额外增加热路径开销。
+- **`/effort` 命令**（0.4.0）：`/effort`（= status）看开关、模型、档位表、当前线缆档位、
+  上次判定与节省统计；`/effort on|off` 开关自动调度；`/effort low|high|max` 手动钉档。
+- **费用估算**（0.4.0）：报表按内置价目表（deepseek / glm / minimax / kimi / qwen / doubao，
+  含 DeepSeek 峰谷分时）估算花费；目录里没有的模型诚实地记成「未计价」而不是瞎猜，
+  可以用 `<账本目录>/prices.json` 补价目。
 
 ## 前置要求
 
@@ -93,6 +104,8 @@ node tools/install.mjs --profile "<…>/profiles/desktop" --force <其余参数�
    （`自动·low` → `自动·high` → …）。
 3. 再点熄灭 → 还原你进入自动前手选的档位，一切回到原生行为。
 4. 每条回复下方角标显示该请求实际用的档位。
+5. 命令行里 `/effort` 可以随时看状态、开关自动、或手动钉一个档位
+   （`/effort on` / `off` / `low` / `high` / `max`）。
 
 ## 账本与报告
 
@@ -107,6 +120,15 @@ usage 回填（output token、未缓存 input token、prompt cache 读/写）。
 五档模型会有 `highx`/`ultra`，从轻到重排序）与**分类器判定**（按语义 tier 分桶）。
 两者会不一致——那正是重点：语义 `low` 在只有一档的模型上必然执行成 `high`。
 
+报表还会：剔除重放重复行并说明剔了多少；按最贵档均值给一个降档节省的粗略反事实；
+按内置价目表估算费用（`估算费用：¥51.88（另有 6225 步未计价…）`）。
+
+补价目：在账本目录写 `prices.json`，键可以是 `provider`、`model` 或 `provider|model`，
+值形如 `{"inputMiss": 4, "cacheRead": 0.8, "output": 18}`（每百万 token，CNY）。
+
+决策行与用量行是分开的：`{"kind":"plan",…}` 记录当时为什么选这个档位，
+用量行记录这一步实际花了多少；`lib/report.js` 只统计用量行。
+
 ## 卸载
 
 ```bash
@@ -118,11 +140,13 @@ node tools/install.mjs --profile "<profile 目录>" --remove
 ## 测试
 
 ```bash
-npm test          # 21 个用例，零依赖（node --test），无需 npm install
+npm test          # 77 个用例，零依赖（node --test），无需 npm install
+node tools/check.mjs   # 自检：d.ts 与导出对齐、打包清单、readEvents 探测完整
 ```
 
-覆盖：passthrough 消毒、手动优先、点亮调度全链路（5 档模型端到端）、连续性升档、
-会话隔离、ladder 纯函数、按钮档位显示（含无 sessions 服务的降级）。
+覆盖：passthrough 消毒、手动优先、点亮调度全链路（5 档模型端到端）、工具负载分级升级、
+打分负缓存、能力守卫（无档位模型不调度）、账本 plan 行与跨进程归因、基线差分（回声 vs 手选）、
+`/effort` 命令、价目匹配与费用估算、报表去重、按钮档位显示（含无 sessions 服务的降级）。
 
 ## 与 dsh-adaptive-effort 的差异
 
@@ -138,7 +162,7 @@ npm test          # 21 个用例，零依赖（node --test），无需 npm insta
 
 ## 兼容性
 
-宿主依赖点（0.3.5 已在 DSH **0.2.2-rc.3** 与 **0.2.2-rc.5** 的 asar 源码里各复核一遍，两版一致）：
+宿主依赖点（0.4.0 已在 DSH **0.2.2-rc.3** 与 **0.2.2-rc.5** 的 asar 源码里各复核一遍，两版一致）：
 
 **兼容 DSH 0.2.1 到 0.2.2-rc.5**：插件运行时自动探测宿主能力——旧宿主继续走
 `agent/request` 改写路径，新宿主（effort 改走 `agent.model.select()`，`agent/request`
@@ -165,6 +189,13 @@ npm test          # 21 个用例，零依赖（node --test），无需 npm insta
 - client 注入包名：`dsh-client-ui-renderer` / `dsh-client-locale` /
   `dsh-client-ui-settings` / `dsh-api-remotes`（rc.3 中实际提供 `slots` / `locale` /
   `configForms` / `remote.settings` 的四个包）
+- `commands` 服务（`/effort` 命令，0.4.0）：`ctx.inject(['commands'])` 拿不到就静默不注册，
+  老宿主上插件其余功能照常
+
+**主动放弃的宿主面**：`appendPluginRecord`（会话内自埋点）与 `sessionProjections` 投影注册。
+前者所在的 `@deepseek-ai/dsh-session` 不在 profile 依赖里，local plugin 解析不到；
+后者要求 `stateSchema` 是真 zod schema（框架调 `.parse()`，schemastery 没有）。0.4.0 用
+账本 plan 行达到同样的"决策可归因"目标，代价是一行 JSONL，不新增任何依赖。
 
 宿主更新若改动这些锚点，本插件需要跟进；欢迎提 issue。
 

@@ -70,6 +70,11 @@ export interface AdaptiveEffortConfig {
     clampForcedThinkingOff: boolean;
     /** Ledger directory (empty = `~/.dsh/effort-auto-toggle`). */
     ledgerDir: string;
+    /**
+     * Last decision as a one-line chip (`low · minimax 12 → low`), written into
+     * the same settings save as `statsSummary` and shown in the button tooltip.
+     */
+    lastDecision: string;
 }
 /** Composition-entry schema (cordis.yml `config:` of the plugin row). */
 export declare const Config: z<AdaptiveEffortConfig>;
@@ -83,11 +88,29 @@ export declare const SETTINGS_NAMESPACE = "effort-auto-toggle";
  * @param config - resolved plugin configuration.
  */
 export declare function apply(ctx: Context, config?: AdaptiveEffortConfig): void;
+/**
+ * The one-line savings chip (`saved ~23% output tokens vs always-max (121 steps)`),
+ * computed from the per-session accumulator. Empty until three steps are known.
+ */
+export declare function statsSummaryOf(sig: {
+    steps: number;
+    outTokens: number;
+    tierOut: Map<string, number>;
+    tierSteps: Map<string, number>;
+} | undefined): string;
 /** Exposed for tests: rebuild a ledger-backed report for a session id. */
 export declare function reportFor(sessionId: string, dir?: string): Promise<string>;
 /** Test seam: classify with an injected fetch (never used by apply()). */
 /** Test seam: forget every resolved model ladder (capacities are cached per process). */
 export declare function __resetModelCache(): void;
+/**
+ * Test seam: feed the observed-selection baseline (normally fed by
+ * `agent/model` reads). Returns whether the value counts as a user pick.
+ */
+export declare function __noteObservedEffort(sessionId: string, observed: string | undefined): {
+    manual: boolean;
+    echo: boolean;
+};
 export declare const __classify: {
     minimax: (text: string, options: Parameters<typeof minimaxClassify>[1], fetchImpl: FetchLike) => Promise<ClassifyResult>;
 };

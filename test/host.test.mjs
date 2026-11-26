@@ -11,7 +11,9 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { format } from 'node:util';
-import { apply, DEFAULT_CONFIG , statsSummaryOf, __resetModelCache } from '../lib/index.js';
+import { apply, DEFAULT_CONFIG , statsSummaryOf, __resetModelCache, __noteObservedEffort } from '../lib/index.js';
+import { buildReport, Ledger, renderReport } from '../lib/ledger.js';
+import { costOf, isPeakBeijing, priceFor } from '../lib/pricing.js';
 
 const AUTO = 'auto';
 const WIRE = ['off', 'low', 'high', 'max'];
@@ -37,6 +39,9 @@ function harness(overrides = {}, efforts = [{ id: 'low' }, { id: 'high' }, { id:
     getSnapshot: () => ({ status: 'ok', writable: true, value: store }),
     watch: (cb) => { listeners.add(cb); return () => listeners.delete(cb); },
   };
+  // 0.4.0: `/effort` needs a commands service; the harness captures whatever the
+  // plugin registers so a test can invoke the handler exactly like the host does.
+  const commands = new Map();
   const ctx = {
     logger: {
       info: (msg, ...args) => logs.info.push(format(msg, ...args)),
@@ -53,6 +58,15 @@ function harness(overrides = {}, efforts = [{ id: 'low' }, { id: 'high' }, { id:
             return { provider: 'bigmodel', id: 'no-dial' };
           return { provider: 'bigmodel', id: 'glm-5.3-' + efforts.length + '-step', reasoning: { efforts } };
         } } });
+      if (deps.includes('commands'))
+        fn({
+          commands: {
+            register: (definition) => {
+              commands.set(definition.name, definition);
+              return () => commands.delete(definition.name);
+            },
+          },
+        });
       if (deps.includes('settings'))
         fn({
           settings: {
@@ -105,7 +119,7 @@ function harness(overrides = {}, efforts = [{ id: 'low' }, { id: 'high' }, { id:
   // 0.2.7: the toggle's source of truth is back to the settings value (the
   // client writes through the remote.settings RPC); arm() flips the store.
   const arm = (on) => { store.autoOn = on; };
-  return { dir, logs, request, claim, store, broadcast, selection, selectCalls, arm, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, logs, request, claim, store, broadcast, selection, selectCalls, commands, arm, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 const userMsg = (text) => ({ type: 'user/message', data: { role: 'user', content: [{ type: 'text', text }] } });
@@ -422,7 +436,7 @@ test('0.3.3 readEvents: a rc.3 session without `events` still feeds the ledger',
     const { readdirSync, readFileSync } = await import('node:fs');
     const names = readdirSync(h.dir).filter((name) => name.startsWith('ledger-'));
     assert.equal(names.length, 1, 'one ledger file per session');
-    const records = readFileSync(`${h.dir}/${names[0]}`, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const records = readFileSync(`${h.dir}/${names[0]}`, 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((row) => row.kind !== 'plan');
     assert.equal(records.length, 1, 'the usage row must be ingested, not dropped');
     assert.notEqual(records[0].classifierSource, 'unknown', 'a snapshotEvents host must still produce a real decision');
     assert.notEqual(records[0].reason, 'fallback (no events on payload)', 'the events path must be the one used');
@@ -439,7 +453,7 @@ test('0.3.3 readEvents: the legacy `session.events` array still works', async ()
     const { readdirSync, readFileSync } = await import('node:fs');
     const names = readdirSync(h.dir).filter((name) => name.startsWith('ledger-'));
     assert.equal(names.length, 1);
-    const records = readFileSync(`${h.dir}/${names[0]}`, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const records = readFileSync(`${h.dir}/${names[0]}`, 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((row) => row.kind !== 'plan');
     assert.equal(records.length, 1, 'pre-rc.3 hosts keep working');
     assert.notEqual(records[0].classifierSource, 'unknown');
   } finally { h.cleanup(); }
@@ -502,7 +516,7 @@ test('0.3.3 cache accounting: prompt-cache tokens are recorded alongside the unc
     await new Promise((r) => setTimeout(r, 40));
     const { readdirSync, readFileSync } = await import('node:fs');
     const names = readdirSync(h.dir).filter((name) => name.startsWith('ledger-'));
-    const record = JSON.parse(readFileSync(`${h.dir}/${names[0]}`, 'utf8').trim().split('\n')[0]);
+    const [record] = await ledgerRecords(h.dir);
     assert.equal(record.inputTokens, 900);
     assert.equal(record.cacheReadTokens, 4100);
     assert.equal(record.cacheWriteTokens, 250);
@@ -530,13 +544,16 @@ test('0.3.1 calm: two short successful turns drop heuristic high back to low', a
 // 0.3.4: the ledger must not depend on the deprecated agent/request hook.
 // ---------------------------------------------------------------------------
 
-const ledgerRecords = async (dir) => {
+// Every row in the file, plan rows included (0.4.0 writes both).
+const ledgerRows = async (dir) => {
   await new Promise((r) => setTimeout(r, 40));
   const { readdirSync, readFileSync } = await import('node:fs');
   const names = readdirSync(dir).filter((name) => name.startsWith('ledger-'));
   if (names.length === 0) return [];
   return readFileSync(`${dir}/${names[0]}`, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
 };
+// Usage rows only: plan rows are decisions, not steps.
+const ledgerRecords = async (dir) => (await ledgerRows(dir)).filter((row) => row.kind !== 'plan');
 
 test('0.3.4 ledger: a usage row writes itself from session/event, with no agent/request at all', async () => {
   const h = harness({}, undefined, { modern: true });
@@ -666,6 +683,125 @@ test('0.3.4 stats: the tooltip accumulator is fed by events, not by the deprecat
 });
 
 // ---------------------------------------------------------------------------
+// 0.4.0: `/effort` — the button's switch, reachable from the composer.
+// ---------------------------------------------------------------------------
+
+test('0.4.0 command: /effort status reports the switch, the ladder and the last decision', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.arm(true);
+    const def = h.commands.get('effort');
+    assert.ok(def, '/effort is registered when a commands service exists');
+    h.claim('你好', 1);
+    const result = await def.handler({
+      agent: { session: { id: 'sess-1' }, model: { current: () => ({ provider: 'bigmodel', model: 'glm-5.3-3-step', reasoningEffort: 'high' }), select: () => {} } },
+      rawInput: '',
+    });
+    assert.equal(result.kind, 'success');
+    assert.match(result.text, /auto on/);
+    assert.match(result.text, /low -> high -> max/);
+    assert.match(result.text, /last decision:/);
+  } finally { h.cleanup(); }
+});
+
+test('0.4.0 command: /effort off flips the switch through the settings service', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.arm(true);
+    const def = h.commands.get('effort');
+    const result = await def.handler({
+      agent: { session: { id: 'sess-1' }, model: { current: () => ({ provider: 'bigmodel', model: 'glm-5.3-3-step' }), select: () => {} } },
+      rawInput: ' off ',
+    });
+    assert.equal(result.kind, 'success');
+    assert.equal(h.store.autoOn, false, 'the volatile field is what the next request reads');
+  } finally { h.cleanup(); }
+});
+
+test('0.4.0 command: /effort max selects the level, an unknown word is an error', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    h.arm(false);
+    const def = h.commands.get('effort');
+    const agent = {
+      session: { id: 'sess-1' },
+      model: { current: () => ({ provider: 'bigmodel', model: 'glm-5.3-3-step', reasoningEffort: 'low' }), select: (next) => h.selectCalls.push(next) },
+    };
+    const ok = await def.handler({ agent, rawInput: 'max' });
+    assert.equal(ok.kind, 'success');
+    assert.equal(h.selectCalls.at(-1).reasoningEffort, 'max');
+    const bad = await def.handler({ agent, rawInput: 'medium' });
+    assert.equal(bad.kind, 'error');
+    assert.match(bad.text, /unknown argument/);
+  } finally { h.cleanup(); }
+});
+
+test('0.4.0 command: /effort says so when the model has no reasoning dial', async () => {
+  const h = harness({}, undefined, { modern: true, noReasoning: true });
+  try {
+    const def = h.commands.get('effort');
+    const agent = { session: { id: 'sess-1' }, model: { current: () => ({ provider: 'bigmodel', model: 'no-dial' }), select: () => {} } };
+    const picked = await def.handler({ agent, rawInput: 'high' });
+    assert.equal(picked.kind, 'error');
+    assert.match(picked.text, /no reasoning dial/);
+    const status = await def.handler({ agent, rawInput: 'status' });
+    assert.match(status.text, /no reasoning dial/);
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// 0.4.0: the decision travels with the file, not with the process.
+// ---------------------------------------------------------------------------
+
+test('0.4.0 baseline: our own write echoes back, a user pick does not', () => {
+  __resetModelCache();
+  assert.deepEqual(__noteObservedEffort('s', 'high'), { manual: false, echo: false }, 'first sight becomes the baseline');
+  assert.deepEqual(__noteObservedEffort('s', 'high'), { manual: false, echo: true }, 'the host echoing our write is not a pick');
+  assert.deepEqual(__noteObservedEffort('s', 'low'), { manual: true, echo: false }, 'a different value is somebody else');
+  assert.deepEqual(__noteObservedEffort('s', 'low'), { manual: false, echo: true });
+  assert.deepEqual(__noteObservedEffort('s', undefined), { manual: false, echo: false }, 'no dial, no opinion');
+});
+
+test('0.4.0 ledger: a plan row records the decision and is never counted as a step', async () => {
+  const h = harness();
+  try {
+    h.arm(true);
+    await h.request({ reasoningEffort: AUTO }, [userMsg('你好')], 1, 1);
+    const rows = await ledgerRows(h.dir);
+    const plans = rows.filter((row) => row.kind === 'plan');
+    assert.equal(plans.length, 1, 'one decision, one plan row');
+    assert.equal(plans[0].turn, 1);
+    assert.equal(plans[0].step, 1);
+    assert.equal(typeof plans[0].tier, 'string');
+    assert.equal(typeof plans[0].reason, 'string');
+    const usage = await ledgerRecords(h.dir);
+    assert.equal(usage.length, 0, 'a plan is not usage');
+  } finally { h.cleanup(); }
+});
+
+test('0.4.0 ledger: a decision written by a previous process still attributes the row', async () => {
+  const h = harness({}, undefined, { modern: true });
+  try {
+    // Previous life: the plan landed on disk, the process died before the
+    // provider reported usage. Nothing is in this process's `pending`.
+    const before = new Ledger(h.dir);
+    before.appendPlan({
+      sessionId: 'sess-1', turn: 2, step: 4,
+      tier: 'max', effort: 'max',
+      reason: 'planned by a previous process',
+      classifierSource: 'minimax', classifierScore: 88,
+    });
+    await before.queue;
+    h.broadcast({ id: 'sess-1' }, usageEvent(2, 4, 5000, 120));
+    const [record] = await ledgerRecords(h.dir);
+    assert.equal(record.effort, 'max', 'the on-disk decision wins over the wire guess');
+    assert.equal(record.tier, 'max');
+    assert.equal(record.classifierSource, 'minimax', 'attribution survives the restart');
+    assert.equal(record.reason, 'planned by a previous process');
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
 // 0.3.4: the 800–3199 dead zone is gone — tool load now buys rungs, not a jump.
 // ---------------------------------------------------------------------------
 
@@ -774,4 +910,67 @@ test('0.3.4 classifier: an HTTP failure falls back to the heuristic and reports 
   const out = await minimaxClassify('你好', { apiKey: 'k', baseUrl: 'http://x', model: 'm', timeoutMs: 500 }, stub);
   assert.ok(typeof out.note === 'string' && out.note.length > 0, 'a fallback carries a note so the backoff can mark it');
   assert.ok(['low', 'high', 'max'].includes(out.tier));
+});
+
+test('0.4.0 pricing: aliases match on boundaries, so glm-5 never prices glm-5.3', () => {
+  assert.ok(priceFor('bigmodel', 'glm-5') !== undefined, 'the catalog knows glm-5');
+  assert.equal(priceFor('bigmodel', 'glm-5.3'), undefined, 'a longer model id is not the shorter one');
+  assert.equal(priceFor('bigmodel', 'glm-5.3-flash'), undefined);
+  assert.ok(priceFor('bigmodel', 'openai/glm-5') !== undefined, 'a provider-prefixed id still matches');
+  assert.equal(priceFor('workbuddy', 'hy4free'), undefined, 'unknown models stay unpriced instead of guessed');
+});
+
+test('0.4.0 pricing: user overrides beat the catalog, as text or as a parsed object', () => {
+  const overrides = { 'glm-5.3': { inputMiss: 9, cacheRead: 1, output: 9 } };
+  const fromObject = priceFor('bigmodel', 'glm-5.3', overrides);
+  const fromText = priceFor('bigmodel', 'glm-5.3', JSON.stringify(overrides));
+  assert.equal(fromObject?.source, 'user override');
+  assert.equal(fromText?.source, 'user override');
+  assert.equal(fromObject?.row.output, 9);
+  assert.equal(priceFor('bigmodel', 'glm-5.3', '{oops'), undefined, 'malformed override text falls back to the catalog');
+});
+
+test('0.4.0 pricing: peak windows are Beijing weekday 09-12 and 14-18', () => {
+  // 2026-11-26 is a Thursday; 02:00Z = 10:00 Beijing (peak), 04:00Z = 12:00 (off-peak).
+  assert.equal(isPeakBeijing(Date.parse('2026-11-26T02:00:00Z')), true);
+  assert.equal(isPeakBeijing(Date.parse('2026-11-26T04:00:00Z')), false);
+  assert.equal(isPeakBeijing(Date.parse('2026-11-26T07:00:00Z')), true);
+  // Saturday 10:00 Beijing is not a peak window.
+  assert.equal(isPeakBeijing(Date.parse('2026-11-28T02:00:00Z')), false);
+  const peak = priceFor('deepseek', 'deepseek-v4.1-flash', undefined, Date.parse('2026-11-26T02:00:00Z'));
+  const off = priceFor('deepseek', 'deepseek-v4.1-flash', undefined, Date.parse('2026-11-26T04:00:00Z'));
+  assert.equal(peak?.row.output, 8);
+  assert.equal(off?.row.output, 4);
+});
+
+test('0.4.0 pricing: a row is charged per slot, cache writes at the input rate', () => {
+  const price = priceFor('bigmodel', 'glm-5');
+  const cost = costOf({ inputTokens: 1e6, cacheReadTokens: 0, cacheWriteTokens: 1e6, outputTokens: 1e6 }, price);
+  assert.equal(cost?.inputMiss, 4);
+  assert.equal(cost?.cacheWrite, 4, 'no published cache-write slot, so it is charged as fresh input');
+  assert.equal(cost?.output, 18);
+  assert.equal(cost?.total, 26);
+  assert.equal(costOf({ inputTokens: 1, outputTokens: 1 }, undefined), undefined);
+});
+
+test('0.4.0 report: unpriced steps are counted, priced steps add up, prices never enter the ledger', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'effort-price-'));
+  try {
+    const ledger = new Ledger(dir);
+    const base = { turn: 1, step: 1, tier: 'high', effort: 'high', reason: 'r', classifierSource: 'heuristic', classifierScore: 10, cacheWriteTokens: 0 };
+    await ledger.append({ ...base, ts: '2026-11-26T02:00:00Z', sessionId: 's', provider: 'bigmodel', model: 'glm-5', inputTokens: 1e6, outputTokens: 0, cacheReadTokens: 0 });
+    await ledger.append({ ...base, step: 2, ts: '2026-11-26T02:00:01Z', sessionId: 's', provider: 'workbuddy', model: 'hy4free', inputTokens: 10, outputTokens: 10, cacheReadTokens: 0 });
+    const report = buildReport(await ledger.read('s'), { ledgerDir: dir });
+    assert.equal(report.cost.cny, 4, 'only the priced step contributes');
+    assert.equal(report.cost.unpricedSteps, 1);
+    assert.equal(report.byEffort[0].unpricedSteps, 1);
+    const text = renderReport(report);
+    assert.match(text, /估算费用：¥4\.00/);
+    assert.match(text, /另有 1 步未计价/);
+    assert.match(text, /prices\.json/);
+    const raw = await ledger.read('s');
+    assert.equal(raw.some((row) => 'cost' in row || 'price' in row), false, 'a price correction must re-price history');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

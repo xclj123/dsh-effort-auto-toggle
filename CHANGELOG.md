@@ -1,5 +1,58 @@
 # 变更记录
 
+## 0.4.0 — 2026-11-26
+
+P1 from the rc.5 review, minus the session projection (deliberately not taken:
+it would drag in a `zod` dependency for a state schema the framework can only
+duck-type). Everything here is host-API-free or uses an API the host actually
+exposes to a local plugin.
+
+- **Added: durable plan rows.** A decision is now written as its own
+  `{"kind":"plan",…}` ledger row the moment it is made, not kept only in the
+  in-memory `pending` map. A restart, a restored session, or a second process
+  picking up the same ledger can still attribute a usage row to the decision
+  behind it; `Ledger.loadIndex()` reads the newest plan per `turn:step` in one
+  pass at startup. Report rows and plan rows never mix (`isLedgerRecord`
+  rejects `kind === 'plan'`).
+- **Added: manual-vs-echo baseline (0.4.0).** `agent.model.current()` returns
+  our own last write on the next step, so "the user hand-picked this" and "this
+  is our echo" look identical. A per-session baseline diff now answers it:
+  first sight records the baseline, an observed value equal to the baseline is
+  an echo, a different one is a user pick (and becomes the new baseline). This
+  replaces the fragile 30-second `plan_echoCheck` heuristic as the primary
+  signal.
+- **Added: decision chip.** The button tooltip gains a `last decision` line
+  (`low · minimax 12 → low`), written in the same `settings.update` call as the
+  savings line — no second enumeration on the hot path.
+- **Added: `/effort` command.** `status` (default), `on`, `off`, `low`, `high`,
+  `max`. It reports the switch, the model, the ladder, the wire effort, the last
+  decision and the savings line; an unknown argument and a model with no dial
+  both answer with a plain error instead of doing something surprising.
+  Registered through `ctx.inject(['commands'])`, so a host without the service
+  simply never sees it.
+- **Added: cost estimate and `prices.json`.** `lib/pricing.js` carries 16
+  catalog entries (deepseek / glm / minimax / kimi / qwen / doubao) with
+  per-million rates, the date each was checked and where it came from, plus
+  DeepSeek's Beijing peak/off-peak schedule. Aliases match on segment
+  boundaries, never `includes`: `glm-5` must not price `glm-5.3`. Prices are
+  resolved at report time and **never stamped into a ledger row**, so fixing a
+  price re-prices the entire history. Models outside the catalog are counted as
+  `未计价` instead of guessed; `<ledger dir>/prices.json` overrides any of them
+  (keyed by `provider`, `model` or `provider|model`).
+- **Added: `tools/check.mjs`.** A dependency-free self-check: every runtime
+  module has a `.d.ts` whose exports match, the packed `files` list plus
+  `types` / `dsh.bundle.patch` / `exports["./client"]` all resolve, and nothing
+  but `readEvents()` may touch `session.events`. `npm run check`.
+- **Fixed: two `title` props on the button.** The second one silently replaced
+  the first, so the hint disappeared as soon as the savings line arrived.
+- **Fixed: `priceFor` ignored already-parsed overrides.** `prices.json` is
+  parsed by the report, and the old `parseOverrides` only accepted a string —
+  a user's own rates were silently dropped.
+- Tests: 65 → 77 (baseline echo vs pick, plan rows and cross-process
+  attribution, `/effort` status/off/pin/unknown/no-dial, alias boundaries,
+  peak windows, per-slot cost arithmetic, unpriced steps, "prices never enter
+  the ledger").
+
 ## 0.3.5 — 2026-11-26
 
 P0 from the DSH 0.2.2-rc.5 review: the ledger stopped replaying itself, the hot

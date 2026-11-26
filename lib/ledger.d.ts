@@ -8,6 +8,28 @@
  * (default `~/.dsh/effort-auto-toggle`); append-only, best-effort writes.
  */
 import type { AutoTier } from './effort.ts';
+/** One plan row: the decision, written before the usage arrives (0.4.0). */
+export interface LedgerPlan {
+    kind: 'plan';
+    ts: string;
+    sessionId: string;
+    turn: number;
+    step: number;
+    /** Tier the classifier scored. */
+    tier: AutoTier;
+    /** Wire effort the scheduler asked for. */
+    effort: string;
+    reason: string;
+    classifierSource: string;
+    classifierScore: number;
+}
+/** Result of one directory scan: usage keys plus the newest plan per step. */
+export interface LedgerIndex {
+    /** `${sessionId}|${turn}:${step}` for every usage row on disk. */
+    keys: Set<string>;
+    /** `${turn}:${step}` → newest plan row for that step. */
+    plans: Map<string, LedgerPlan>;
+}
 /** One ledger record — the decision plus the observed usage of that step. */
 export interface LedgerRecord {
     ts: string;
@@ -48,12 +70,24 @@ export declare class Ledger {
     constructor(dir?: string);
     /** Ledger file path for a session (exposed for tests/reporting). */
     pathFor(sessionId: string): string;
-    /** Append one record; resolves false when the write failed. */
-    append(record: LedgerRecord): Promise<boolean>;
+    /**
+     * Append one record. Serialised through an internal queue, so call order is
+     * file order even when the caller never awaits (0.3.4 wrote rows out of
+     * order for exactly that reason).
+     */
+    append(record: LedgerRecord): Promise<unknown>;
+    /** Append one plan row (the decision, before its usage arrives). */
+    appendPlan(plan: Omit<LedgerPlan, 'kind' | 'ts'> & { ts?: string }): Promise<unknown>;
     /** Read every record of one session file (malformed lines skipped). */
     read(sessionId: string): Promise<LedgerRecord[]>;
     /** List available session ids (files present in the ledger dir). */
     sessions(): Promise<string[]>;
+    /**
+     * One pass over the ledger dir: every usage key on disk plus the newest plan
+     * row per `turn:step`. Used at startup so a restored session is neither
+     * replayed nor left unattributed.
+     */
+    loadIndex(): Promise<LedgerIndex>;
 }
 /** Parse JSONL text into records, skipping malformed lines. */
 export declare function parseLedgerLines(text: string): LedgerRecord[];
@@ -65,6 +99,18 @@ export interface BucketStats {
     inputTokens: number;
     cacheReadTokens: number;
     meanOutput: number;
+    /** Estimated CNY cost of these steps (0 when nothing priced them). */
+    costCny: number;
+    /** Estimated USD cost of these steps (0 when nothing priced them). */
+    costUsd: number;
+    /** Steps this bucket could not price (not in the catalog, no override). */
+    unpricedSteps: number;
+}
+/** Total estimated cost of a report, plus how much of it stayed unpriced. */
+export interface ReportCost {
+    cny: number;
+    usd: number;
+    unpricedSteps: number;
 }
 /** Aggregate stats for one wire-effort bucket (`low`, `high`, `highx`, `max`, ...). */
 export interface EffortStats extends BucketStats {
@@ -77,6 +123,8 @@ export interface TierStats extends BucketStats {
 }
 /** The full report payload (Chinese strings live in `renderReport`). */
 export interface EffortReport {
+    /** Ledger dir the report priced against (for the "missing prices" hint). */
+    ledgerDir: string;
     records: LedgerRecord[];
     /** Rows dropped because another row already claimed their `session:turn:step`. */
     replayRows: number;
@@ -94,12 +142,21 @@ export interface EffortReport {
     totalOutput: number;
     /** Estimated tokens saved by downshifting vs an always-heaviest baseline. */
     estimatedSaved: number;
+    /** Estimated spend, priced row by row at report time. */
+    cost: ReportCost;
     /** Lightest-level steps whose output ballooned beyond the high-level mean. */
     misroutesLowBallooned: LedgerRecord[];
     /** high-and-above steps whose output stayed tiny. */
     misroutesOverThought: LedgerRecord[];
 }
+/** Options for {@link buildReport}. */
+export interface ReportOptions {
+    /** `prices.json` text or the parsed object; wins over the built-in catalog. */
+    priceOverrides?: string | Record<string, unknown>;
+    /** Ledger dir to name in the "missing prices" hint. */
+    ledgerDir?: string;
+}
 /** Aggregate ledger records into the report payload. */
-export declare function buildReport(records: LedgerRecord[]): EffortReport;
+export declare function buildReport(records: LedgerRecord[], options?: ReportOptions): EffortReport;
 /** Render the report as a Chinese console block. */
 export declare function renderReport(report: EffortReport): string;

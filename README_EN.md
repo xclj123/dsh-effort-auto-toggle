@@ -48,7 +48,26 @@ passthrough path, killing that class of errors at the root.
   `Auto·highx`), per-reply badges mirror it, in the adapter's own English
   naming.
 - **Ledger**: every decision plus observed token usage lands in JSONL under
-  `~/.dsh/effort-auto-toggle/`, with a markdown report.
+  `~/.dsh/effort-auto-toggle/`, with a markdown report. Decisions are written as
+  separate `plan` rows first (0.4.0), so a restart, a restored session or a
+  different process picking up the file can still explain why a step ran at the
+  effort it did.
+- **Manual vs echo** (0.4.0): the host feeds the plugin's own last write back
+  into the next request, so a baseline diff separates "the user picked this"
+  from "this is our own echo" — a hand pick is honoured immediately, an echo is
+  never mistaken for one.
+- **Decision chip** (0.4.0): the button tooltip gains a `last decision` line,
+  e.g. `low · minimax 12 → low` (semantic tier · scorer source score → wire
+  effort). It rides the same settings write as the savings line, so the hot
+  path pays nothing extra.
+- **`/effort` command** (0.4.0): `/effort` (= status) shows the switch, the
+  model, the ladder, the current wire effort, the last decision and the savings
+  line; `/effort on|off` flips scheduling; `/effort low|high|max` pins a rung.
+- **Cost estimate** (0.4.0): the report prices every step against a built-in
+  catalog (deepseek / glm / minimax / kimi / qwen / doubao, including DeepSeek's
+  peak/off-peak schedule). A model outside the catalog is reported as
+  "unpriced" rather than guessed; `<ledger dir>/prices.json` adds your own
+  rates.
 
 ## Requirements
 
@@ -112,6 +131,8 @@ YAML-only fields: `scoreTimeoutMs` (default 9000ms), `clampForcedThinkingOff`
 3. Click again to dim — your pre-auto manual pick is restored, everything
    behaves natively.
 4. Each reply carries a badge with the effort actually used.
+5. `/effort` in the composer shows the state and can flip the switch or pin a
+   rung (`/effort on` / `off` / `low` / `high` / `max`).
 
 ## Ledger & report
 
@@ -125,6 +146,18 @@ one adds `highx`/`ultra`, lightest first) and **classifier verdict** (bucketed
 by semantic tier). They disagree on purpose: a semantic `low` on a one-level
 model necessarily executes as `high`.
 
+The report also folds replayed duplicate rows (and says how many), estimates
+downshift savings against an always-heaviest counterfactual, and prices the run
+with the built-in catalog (`估算费用：¥51.88（另有 6225 步未计价…）`).
+
+Add rates with `<ledger dir>/prices.json`, keyed by `provider`, `model` or
+`provider|model`, value `{"inputMiss": 4, "cacheRead": 0.8, "output": 18}`
+(per million tokens, CNY).
+
+Decision rows and usage rows are separate: `{"kind":"plan",…}` records why that
+effort was chosen, the usage row records what the step actually cost;
+`lib/report.js` counts usage rows only.
+
 ## Uninstall
 
 ```bash
@@ -137,12 +170,16 @@ restart DSH.
 ## Tests
 
 ```bash
-npm test   # 21 cases, zero-dependency (node --test), no npm install needed
+npm test              # 77 cases, zero-dependency (node --test), no npm install
+node tools/check.mjs  # self-check: d.ts vs exports, packed files, readEvents probe
 ```
 
 Covers: passthrough sanitisation, manual wins, full armed scheduling on a
-5-rung model, continuity upgrades, session isolation, ladder pure functions,
-button tier labels (incl. degradation without a sessions service).
+5-rung model, graded tool-load escalation, scorer backoff, capability guards
+(a model with no dial is never scheduled), ledger plan rows and cross-process
+attribution, the baseline diff (echo vs hand pick), the `/effort` command,
+price matching and cost estimates, report de-duplication, button tier labels
+(incl. degradation without a sessions service).
 
 ## Differences vs dsh-adaptive-effort
 
@@ -187,6 +224,17 @@ validated read-only) switch to the claim-time decision path automatically.
   `ctx.inject`)
 - client package list: `dsh-client-ui-renderer` / `dsh-client-locale` /
   `dsh-client-ui-settings` / `dsh-api-remotes`
+- `commands` service (the `/effort` command, 0.4.0): registered through
+  `ctx.inject(['commands'])`; a host without the service simply never sees the
+  command, everything else keeps working
+
+**Deliberately not used**: `appendPluginRecord` (in-session plugin records) and
+`sessionProjections` registration. The former lives in
+`@deepseek-ai/dsh-session`, which is not a profile dependency, so a local plugin
+cannot resolve it; the latter requires `stateSchema` to be a real zod schema
+(the framework calls `.parse()`, schemastery has none). 0.4.0 reaches the same
+"the decision is attributable" goal with a plan row in the ledger — one line of
+JSONL, no new dependency.
 
 If a host update moves these anchors the plugin needs to follow; issues
 welcome.
