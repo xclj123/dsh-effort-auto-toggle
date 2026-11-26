@@ -78,6 +78,8 @@ export interface TierStats extends BucketStats {
 /** The full report payload (Chinese strings live in `renderReport`). */
 export interface EffortReport {
     records: LedgerRecord[];
+    /** Rows dropped because another row already claimed their `session:turn:step`. */
+    replayRows: number;
     /**
      * Grouped by the wire effort that actually executed, lightest first. Dynamic
      * because the id space is model-specific: single-level models report only

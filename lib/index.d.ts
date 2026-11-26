@@ -86,6 +86,8 @@ export declare function apply(ctx: Context, config?: AdaptiveEffortConfig): void
 /** Exposed for tests: rebuild a ledger-backed report for a session id. */
 export declare function reportFor(sessionId: string, dir?: string): Promise<string>;
 /** Test seam: classify with an injected fetch (never used by apply()). */
+/** Test seam: forget every resolved model ladder (capacities are cached per process). */
+export declare function __resetModelCache(): void;
 export declare const __classify: {
     minimax: (text: string, options: Parameters<typeof minimaxClassify>[1], fetchImpl: FetchLike) => Promise<ClassifyResult>;
 };

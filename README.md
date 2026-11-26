@@ -138,9 +138,9 @@ npm test          # 21 个用例，零依赖（node --test），无需 npm insta
 
 ## 兼容性
 
-宿主依赖点（0.3.4 已在 DSH **0.2.2-rc.3** 的 asar 源码里逐条复核）：
+宿主依赖点（0.3.5 已在 DSH **0.2.2-rc.3** 与 **0.2.2-rc.5** 的 asar 源码里各复核一遍，两版一致）：
 
-**兼容 DSH 0.2.1 到 0.2.2-rc.3**：插件运行时自动探测宿主能力——旧宿主继续走
+**兼容 DSH 0.2.1 到 0.2.2-rc.5**：插件运行时自动探测宿主能力——旧宿主继续走
 `agent/request` 改写路径，新宿主（effort 改走 `agent.model.select()`，`agent/request`
 只读校验）自动切换到 claim-time 决策路径，无需分别安装。
 
@@ -152,9 +152,14 @@ npm test          # 21 个用例，零依赖（node --test），无需 npm insta
 - `Session` 事件读取：0.2.2-rc.3 移除了 `Session.events`，0.3.3 起按
   `snapshotEvents()` → `ownEvents()` → `eventAt()`/`seq` → `events` 四级探测（前三者在
   rc.3 标了 `@deprecated` 但仍可用；四级的目的是兼容老宿主与未来再变）
-- `llm` 服务 `resolveModelInfo(provider, model)`（0.2.0 档位表来源）
-- `settings` 服务现代 `describe` / `update`（ns = profile entry id；rc.3 里
-  `ctx.fiber.entry` 已不存在，插件走 entry id 兜底）
+- `llm` 服务 `resolveModelInfo(provider, model)`（0.2.0 档位表来源）。返回里**没有
+  `reasoning` 字段**= 该路由没有档位，0.3.5 起记成空档位表并永不调度（0.3.4 之前会冒充
+  默认三档下发，撞上适配器的 `UNSUPPORTED_REASONING_EFFORT`）；`INVALID_MODEL_REASONING`
+  同样按"无档位"处理，其他错误（传输、未知模型）不缓存、下次重试
+- `settings` 服务现代 `describe` / `update`（ns = profile entry id；`ctx.fiber.entry` 在
+  rc.5 可用，插件仍优先用它、失败再兜底 entry id）。**热路径不再调 `describe()`**：装配时
+  拿到的 volatile 字段是真·活引用（`{get()}`），每次直接读，0.3.5 起每个请求省一次
+  `describe` 全量枚举
 - client 侧 `conversation.input.right` 插槽、`modelSelection` 会话投影、
   `configForms`、`sessions` 服务（嵌套 `ctx.inject` 捕获）
 - client 注入包名：`dsh-client-ui-renderer` / `dsh-client-locale` /

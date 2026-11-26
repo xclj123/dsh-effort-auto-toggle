@@ -11,12 +11,15 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { format } from 'node:util';
-import { apply, DEFAULT_CONFIG , statsSummaryOf} from '../lib/index.js';
+import { apply, DEFAULT_CONFIG , statsSummaryOf, __resetModelCache } from '../lib/index.js';
 
 const AUTO = 'auto';
 const WIRE = ['off', 'low', 'high', 'max'];
 
 function harness(overrides = {}, efforts = [{ id: 'low' }, { id: 'high' }, { id: 'max' }], opts = {}) {
+  // The ladder cache is per process; a test that changes resolveModelInfo's
+  // answer must not inherit the previous test's resolved ladder.
+  __resetModelCache();
   const dir = mkdtempSync(join(tmpdir(), 'effort-toggle-'));
   const store = { ...DEFAULT_CONFIG, mode: 'heuristic', ledgerDir: dir, ...overrides };
   const handlers = new Map();
@@ -42,11 +45,22 @@ function harness(overrides = {}, efforts = [{ id: 'low' }, { id: 'high' }, { id:
     on: (name, cb, opts) => { handlers.set(name, { cb, opts }); return () => handlers.delete(name); },
     inject: (deps, fn) => {
       if (deps.includes('llm'))
-        fn({ llm: { resolveModelInfo: async () => ({ provider: 'bigmodel', id: 'glm-5.3-' + efforts.length + '-step', reasoning: { efforts } }) } });
+        fn({ llm: { resolveModelInfo: async () => {
+          if (opts.llmError)
+            throw Object.assign(new Error('resolve failed'), { code: opts.llmError });
+          // 0.3.5: the host omits `reasoning` entirely for a route with no dial.
+          if (opts.noReasoning)
+            return { provider: 'bigmodel', id: 'no-dial' };
+          return { provider: 'bigmodel', id: 'glm-5.3-' + efforts.length + '-step', reasoning: { efforts } };
+        } } });
       if (deps.includes('settings'))
         fn({
           settings: {
-            describe: () => [{ ns: 'dsh-effort-auto-toggle', value: { ...store } }],
+            describe: () => {
+              if (opts.describeThrows)
+                throw new Error('describe() must not run on the hot path');
+              return [{ ns: 'dsh-effort-auto-toggle', value: { ...store } }];
+            },
             update: (ns, patch) => { Object.assign(store, patch); },
           },
           effect: (f) => { f(); return () => {}; },
@@ -55,7 +69,16 @@ function harness(overrides = {}, efforts = [{ id: 'low' }, { id: 'high' }, { id:
     effect: (fn) => fn(),
     get: () => undefined,
   };
-  apply(ctx, store);
+  // 0.3.5: a real profile hands over live volatile refs; `opts.liveRefs`
+  // exercises that shape (and `describeThrows` proves describe() is not needed).
+  if (opts.liveRefs) {
+    const refs = {};
+    for (const [k, v] of Object.entries(store)) refs[k] = { get: () => store[k] };
+    apply(ctx, refs);
+  }
+  else {
+    apply(ctx, store);
+  }
   const modelApi = modern
     ? {
         current: () => ({ ...selection }),
@@ -332,11 +355,12 @@ test('0.3.0 stats: the savings summary computes against the always-max baseline'
   const h = harness();
   try {
     h.arm(true);
-    const events = [userMsg('x')];
     // 4 low steps (out 100) + 1 max step (out 600): always-max est = 600*5 = 3000, actual = 1000 -> saved ~67%
-    for (let s = 1; s <= 4; s += 1) events.push(usageEvent(1, s, 5000, 100));
-    events.push(usageEvent(1, 5, 5000, 600));
-    await h.request({ reasoningEffort: 'low' }, events, 1, 1);
+    // 0.3.5: usage rows arrive live (session/event). A restored log is no longer
+    // replayed, so the test drives the same path production does.
+    for (let s = 1; s <= 4; s += 1) h.broadcast({ id: 'sess-1' }, usageEvent(1, s, 5000, 100));
+    h.broadcast({ id: 'sess-1' }, usageEvent(1, 5, 5000, 600));
+    await h.request({ reasoningEffort: 'low' }, [userMsg('x')], 1, 1);
     await new Promise((r) => setTimeout(r, 30)); // let the throttled push settle
     assert.ok(/^saved ~\d+% output tokens vs always-max \(\d+ steps\)$/.test(h.store.statsSummary || ''), 'summary=' + h.store.statsSummary);
     // pure-function check of the full-turn math: 4 low (100) + 1 max (600) -> est 3000, actual 1000 -> 67%
@@ -445,12 +469,14 @@ test('0.3.3 continuity: a heavy tool call still pins low up to high', async () =
 
 test('0.3.3 ledger report: five-level efforts stay distinct and never fall out of the report', async () => {
   const { buildReport } = await import('../lib/ledger.js');
-  const rec = (tier, effort, outputTokens) => ({
-    ts: 't', sessionId: 's', turn: 1, step: 1, model: 'm', provider: 'p',
+  // Distinct steps: the report folds duplicates by session:turn:step, so three
+  // efforts sharing one step would (correctly) collapse into one row.
+  const rec = (tier, effort, outputTokens, step) => ({
+    ts: 't', sessionId: 's', turn: 1, step, model: 'm', provider: 'p',
     tier, effort, reason: '', classifierSource: 'minimax', classifierScore: 20,
     inputTokens: 0, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0,
   });
-  const report = buildReport([rec('low', 'low', 100), rec('high', 'highx', 200), rec('max', 'ultra', 600)]);
+  const report = buildReport([rec('low', 'low', 100, 1), rec('high', 'highx', 200, 2), rec('max', 'ultra', 600, 3)]);
   const effortSteps = Object.fromEntries(report.byEffort.map((row) => [row.effort, row.steps]));
   assert.deepEqual(effortSteps, { low: 1, highx: 1, ultra: 1 }, 'every wire effort id gets a bucket');
   assert.deepEqual(report.byEffort.map((row) => row.effort), ['low', 'highx', 'ultra'], 'lightest first');
@@ -488,11 +514,13 @@ test('0.3.1 calm: two short successful turns drop heuristic high back to low', a
   try {
     h.arm(true);
     // turn 1: 3 steps, no failures -> streak 1 (after turn 2 claim)
-    await h.request({ reasoningEffort: 'high' }, [userMsg('看看这个目录结构'), usageEvent(1, 1, 5000, 100), usageEvent(1, 2, 5000, 100), usageEvent(1, 3, 5000, 100)], 1, 1);
+    await h.request({ reasoningEffort: 'high' }, [userMsg('看看这个目录结构')], 1, 1);
+    for (const s of [1, 2, 3]) h.broadcast({ id: 'sess-1' }, usageEvent(1, s, 5000, 100));
     h.claim('帮我重构这个模块的架构：\n```\ncode\n```\n看看', 2); // 2 heavy keywords + fence -> 36 heuristic high, streak=1, calm not yet
     assert.equal(h.selectCalls.at(-1).reasoningEffort, 'high', 'streak 1 keeps heuristic high');
     // turn 2: 2 more clean steps -> streak 2 at turn 3 claim
-    await h.request({ reasoningEffort: 'high' }, [userMsg('再看一下配置文件'), usageEvent(2, 1, 5000, 100), usageEvent(2, 2, 5000, 100)], 2, 1);
+    await h.request({ reasoningEffort: 'high' }, [userMsg('再看一下配置文件')], 2, 1);
+    for (const s of [1, 2]) h.broadcast({ id: 'sess-1' }, usageEvent(2, s, 5000, 100));
     h.claim('再优化一下这段代码的性能：\n```\ncode\n```\n看看', 3); // heuristic high, calm drops to low
     assert.equal(h.selectCalls.at(-1).reasoningEffort, 'low', 'two calm turns must drop heuristic high to low');
   } finally { h.cleanup(); }
@@ -540,16 +568,88 @@ test('0.3.4 ledger: the same turn:step is never written twice by the two paths',
   } finally { h.cleanup(); }
 });
 
-test('0.3.4 ledger: rows that predate the plugin still get caught up by agent/request', async () => {
+test('0.3.5 ledger: a restored session is not replayed into the file', async () => {
   const h = harness();
   try {
     h.arm(true);
-    // Two rows already in the log; neither was broadcast live.
+    // Two rows already in the log from a previous process; neither was
+    // broadcast live. 0.3.4 re-read the whole log here and wrote both back out
+    // as "无记录（插件中途启用或会话恢复）" rows — a third of the ledger.
     const events = [userMsg('你好'), usageEvent(1, 1, 5000, 120), usageEvent(1, 2, 6000, 80)];
     await h.request({ reasoningEffort: AUTO }, events, 1, 3);
     const records = await ledgerRecords(h.dir);
-    assert.equal(records.length, 2, 'the catch-up sweep backfills the history');
-    assert.deepEqual(records.map((r) => r.step), [1, 2]);
+    assert.equal(records.length, 0, 'first sight of a session must not backfill it');
+  } finally { h.cleanup(); }
+});
+
+test('0.3.5 ledger: a row already on disk survives a restart without being written twice', async () => {
+  const h = harness();
+  try {
+    h.arm(true);
+    const existing = {
+      ts: 't', sessionId: 'sess-1', turn: 1, step: 1, model: 'glm-5.3-3-step', provider: 'bigmodel',
+      tier: 'low', effort: 'low', reason: 'live', classifierSource: 'heuristic', classifierScore: 10,
+      inputTokens: 5000, outputTokens: 120, cacheReadTokens: 0, cacheWriteTokens: 0,
+    };
+    writeFileSync(join(h.dir, 'ledger-sess-1.jsonl'), JSON.stringify(existing) + '\n');
+    h.broadcast({ id: 'sess-1' }, usageEvent(1, 1, 5000, 120)); // same step, fresh process
+    const records = await ledgerRecords(h.dir);
+    assert.equal(records.length, 1, 'the on-disk key set must suppress the rewrite');
+    assert.equal(records[0].reason, 'live', 'the original row is kept, not appended to');
+  } finally { h.cleanup(); }
+});
+
+test('0.3.5 report: replay duplicates are folded and counted', async () => {
+  const { buildReport } = await import('../lib/ledger.js');
+  const rec = (step, outputTokens, reason) => ({
+    ts: 't', sessionId: 's', turn: 1, step, model: 'm', provider: 'p',
+    tier: 'low', effort: 'low', reason, classifierSource: 'heuristic', classifierScore: 0,
+    inputTokens: 0, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0,
+  });
+  const report = buildReport([rec(1, 100, 'live'), rec(1, 100, 'replay'), rec(2, 100, 'live')]);
+  assert.equal(report.records.length, 2, 'one row per session:turn:step');
+  assert.equal(report.replayRows, 1, 'the dropped row is reported, not silently ignored');
+  assert.equal(report.totalOutput, 200, 'duplicates must not double the token total');
+});
+
+test('0.3.5 capability guard: a route with no reasoning block is never scheduled', async () => {
+  const h = harness({}, undefined, { modern: true, noReasoning: true });
+  try {
+    h.arm(true);
+    // First request fills the ladder cache with the empty ladder.
+    const out = await h.request({ reasoningEffort: AUTO }, [userMsg('你好')], 1, 1);
+    assert.equal(out.reasoningEffort, AUTO, 'nothing scheduled: the seed rides through untouched');
+    h.claim('帮我重构这个模块的架构', 2);
+    assert.equal(h.selectCalls.length, 0, 'no level may be written onto a model without a dial');
+  } finally { h.cleanup(); }
+});
+
+test('0.3.5 capability guard: INVALID_MODEL_REASONING is treated as "no dial", other errors are retried', async () => {
+  const broken = harness({}, undefined, { modern: true, llmError: 'INVALID_MODEL_REASONING' });
+  try {
+    broken.arm(true);
+    await broken.request({ reasoningEffort: AUTO }, [userMsg('你好')], 1, 1);
+    broken.claim('重构架构', 2);
+    assert.equal(broken.selectCalls.length, 0, 'invalid reasoning metadata must not be scheduled against');
+  } finally { broken.cleanup(); }
+  // Legacy (non-model.select) host: the request path itself rewrites the effort,
+  // which is where the default-ladder fallback becomes visible.
+  const transient = harness({}, undefined, { llmError: 'TRANSPORT' });
+  try {
+    transient.arm(true);
+    const out = await transient.request({ reasoningEffort: AUTO }, [userMsg('你好')], 1, 1);
+    assert.equal(out.reasoningEffort, 'low', 'a transient resolve failure still falls back to the default ladder');
+  } finally { transient.cleanup(); }
+});
+
+test('0.3.5 live config: volatile refs are read directly, without settings.describe()', async () => {
+  const h = harness({ autoOn: false }, undefined, { liveRefs: true, describeThrows: true });
+  try {
+    const off = await h.request({ reasoningEffort: 'max' }, [userMsg('你好')]);
+    assert.equal(off.reasoningEffort, 'max', 'auto off: passthrough');
+    h.arm(true);
+    const on = await h.request({ reasoningEffort: 'max' }, [userMsg('你好')]);
+    assert.equal(on.reasoningEffort, 'low', 'a flip is picked up live, with describe() throwing');
   } finally { h.cleanup(); }
 });
 

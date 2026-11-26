@@ -158,9 +158,9 @@ button tier labels (incl. degradation without a sessions service).
 
 ## Compatibility
 
-Host anchor points (verified against the DSH 0.2.2-rc.3 asar):
+Host anchor points (verified against the DSH 0.2.2-rc.3 **and** 0.2.2-rc.5 asar; the two agree):
 
-**DSH 0.2.3+ supports both DSH 0.2.1 and DSH 0.2.2+ (incl. 0.2.2-rc.1)**: the plugin
+**DSH 0.2.1 through 0.2.2-rc.5**: the plugin
 probes the host at runtime — legacy hosts keep the `agent/request` rewrite path,
 modern hosts (where effort rides `agent.model.select()` and `agent/request` is
 validated read-only) switch to the claim-time decision path automatically.
@@ -171,8 +171,15 @@ validated read-only) switch to the claim-time decision path automatically.
 - `agent/request` waterfall (registered with prepend; read-only on 0.2.2+ hosts,
   kept only as a catch-up sweep — upstream marks it `@deprecated`, "do not add
   new listeners")
-- `llm` service `resolveModelInfo(provider, model)` — the 0.2.0 ladder source
-- `settings` service modern `describe` / `update` (ns = profile entry id)
+- `llm` service `resolveModelInfo(provider, model)` — the 0.2.0 ladder source. Info with
+  **no `reasoning` block** means "this route has no dial": 0.3.5+ remembers an empty ladder
+  and never schedules against it (before 0.3.5 it pretended the default three levels and
+  earned `UNSUPPORTED_REASONING_EFFORT` from the adapter). `INVALID_MODEL_REASONING` is
+  treated the same way; transport/unknown-model errors are not cached and retried
+- `settings` service modern `describe` / `update` (ns = profile entry id). The hot path
+  no longer calls `describe()`: the volatile fields handed over at assembly are live
+  `{get()}` refs, so 0.3.5+ reads them directly instead of re-enumerating the form on
+  every request
 - `Session` event reads: 0.2.2-rc.3 dropped `Session.events`, so 0.3.3+ probes
   `snapshotEvents()` → `ownEvents()` → `eventAt()`/`seq` → `events`
 - client side: `conversation.input.right` slot, `modelSelection` session

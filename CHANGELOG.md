@@ -1,5 +1,43 @@
 # 变更记录
 
+## 0.3.5 — 2026-11-26
+
+P0 from the DSH 0.2.2-rc.5 review: the ledger stopped replaying itself, the hot
+path stopped enumerating settings, and a model without a reasoning dial is no
+longer scheduled against.
+
+- **Fixed: a third of the ledger was replay.** `agent/request` swept from
+  `scannedIndex.get(sessionId) ?? -1`, so the first request after a restart
+  re-read the whole session log and wrote every historical usage row back out —
+  on real data **5,693 of 10,385 rows were duplicates**. Two gates now hold:
+  the first sight of a session seeds from the log's end instead of the
+  beginning, and `Ledger` loads the on-disk `sessionId|turn:step` key set once
+  at startup so a row can never be written twice even across processes.
+- **Fixed: `describe()` ran on every request.** The volatile settings fields
+  handed to `apply()` are live `{get()}` refs (`loader/volatile-update`
+  commits in place), so the config is now read straight off them — one
+  `describe()` enumeration per `agent/request` is gone from the hot path.
+- **Fixed: models with no reasoning dial got scheduled anyway.** A route whose
+  model info carries no `reasoning` block (or answers
+  `INVALID_MODEL_REASONING`) is remembered as an empty ladder: no claim-time
+  select, no scheduling, no `off` clamping — the seed rides through untouched.
+  Transient failures (transport, unknown model) still fall back to the default
+  ladder and are retried. This is the `UNSUPPORTED_REASONING_EFFORT` class of
+  bug, closed on our side before it can fire.
+- **Fixed: the report priced duplicates.** `buildReport` folds rows by
+  `session:turn:step` and reports how many it dropped
+  (`会话步骤数：N（已剔除重放重复行 M）`), so token totals and savings stop
+  counting the same step twice. Legacy level ids (`minimal`/`medium`, and
+  toggle-only `on`) now have a real rank instead of sorting past `max` and
+  becoming the savings ceiling.
+- **Docs:** `engines.dsh` declares the host range actually tested
+  (`>=0.2.1 <0.3.0-0`); the compatibility lists in both READMEs were re-verified
+  against the 0.2.2-rc.5 asar.
+- Tests: 60 → 65 (`a restored session is not replayed into the file`,
+  `a row already on disk survives a restart without being written twice`,
+  `replay duplicates are folded and counted`, two capability-guard cases,
+  `volatile refs are read directly, without settings.describe()`).
+
 ## 0.3.4 — 2026-11-17
 
 The three follow-ups from the 0.3.3 review, plus the accounting moved off a
